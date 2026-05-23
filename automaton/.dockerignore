@@ -1,0 +1,53 @@
+# Keep the build context lean — only what the image actually needs.
+
+# Version control
+.git
+.gitignore
+.github
+
+# Python caches
+__pycache__
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info
+.eggs
+dist
+build
+*.whl
+
+# Tests and CI — not shipped in the image
+tests/
+.pytest_cache
+pytest-cache-files-*
+.coverage
+htmlcov/
+*.log
+
+# Development tooling
+.venv
+venv/
+env/
+.env          # secrets — never bake into the image
+*.env
+
+# Deployment artefacts for other platforms (not needed in Docker)
+deploy/
+
+# Docs and design docs
+docs/
+*.md
+!pyproject.toml
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Compiled extensions
+*.so
+*.dylib
+*.dll

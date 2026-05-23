@@ -1,7 +1,33 @@
 [project]
-name = "automaton"
-version = "0.2.0"
+# PyPI distribution name. The import name stays `automaton`.
+# ("automaton" is already taken on PyPI — automaton-engine is the
+# published name; `pip install automaton-engine` then `import automaton`.)
+name = "automaton-engine"
+version = "0.3.0"
 description = "A strongly consistent personal automation platform"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [
+    { name = "Richmond", email = "730richey730@gmail.com" },
+]
+keywords = [
+    "automation", "workflow", "scheduler", "sqlite", "cron",
+    "personal-infrastructure", "agent",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+    "Typing :: Typed",
+]
 requires-python = ">=3.10"
 dependencies = [
     "pyyaml>=6.0",
@@ -12,10 +38,17 @@ dependencies = [
     "apprise>=1.10",
 ]
 
+[project.urls]
+Homepage       = "https://github.com/730richey730/echoes"
+Repository     = "https://github.com/730richey730/echoes"
+"Bug Tracker"  = "https://github.com/730richey730/echoes/issues"
+Changelog      = "https://github.com/730richey730/echoes/blob/main/automaton/CHANGELOG.md"
+
 [project.optional-dependencies]
+# Run the test suite.
 test = ["pytest>=7.0", "cryptography>=42.0", "keyrings.alt>=5.0"]
-# TLS cert generation for the built-in UI server. `automaton tls init`
-# requires this; the engine and CLI work without it.
+# TLS cert generation for the built-in UI server (`automaton tls init`).
+# The engine and CLI work without it.
 tls = ["cryptography>=42.0"]
 # Encrypted-file fallback keyring for headless Linux servers (no D-Bus).
 secrets-headless = ["keyrings.alt>=5.0"]
@@ -25,10 +58,12 @@ automaton = "automaton.cli:main"
 
 # External step types register here. Each entry's value must point to a
 # module that calls @step_type("name") on import. The plugin is discovered
-# automatically on startup; no edit to steps.py required.
+# automatically at startup — no edit to steps.py required.
+#
+# Example (in an external package's pyproject.toml):
+#   [project.entry-points."automaton.step_types"]
+#   my_step = "my_package.module"
 [project.entry-points."automaton.step_types"]
-# Example - external packages declare entries like:
-# my_step = "my_package.module"
 
 [build-system]
 requires = ["setuptools>=61"]
@@ -39,5 +74,8 @@ where = ["."]
 include = ["automaton*", "templates*"]
 
 [tool.setuptools.package-data]
-automaton = ["migrations/*.sql"]
-templates = ["**/*.yaml", "INDEX.md"]
+automaton = ["migrations/*.sql", "py.typed"]
+templates  = ["**/*.yaml", "INDEX.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

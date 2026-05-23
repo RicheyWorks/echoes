@@ -1,0 +1,99 @@
+# automaton — Docker Compose stack
+#
+# Three services mirror the three systemd units:
+#   worker     — pulls steps off the queue and executes them
+#   scheduler  — fires cron triggers, times out stalled runs
+#   ui         — HTTP API + web dashboard on port 8080
+#
+# All three share a single named volume (automaton-data) that holds
+# the SQLite database file. The worker and scheduler never open a
+# network port; only the ui service does.
+#
+# Quick start:
+#   cp deploy/automaton.env.example .env   # set AUTOMATON_TOKEN
+#   docker compose up -d
+#   docker compose logs -f
+#
+# The .env file (see deploy/automaton.env.example) is the only place
+# you need to set secrets. Do not commit it to version control.
+
+services:
+
+  worker:
+    image: automaton:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    command: ["automaton", "worker", "--loop"]
+    env_file: .env
+    environment:
+      AUTOMATON_DB: /data/automaton.db
+      AUTOMATON_LOG_FORMAT: json
+      AUTOMATON_LOG_LEVEL: INFO
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - automaton-data:/data
+    restart: unless-stopped
+    depends_on:
+      ui:
+        condition: service_healthy
+
+  scheduler:
+    image: automaton:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    command: ["automaton", "scheduler"]
+    env_file: .env
+    environment:
+      AUTOMATON_DB: /data/automaton.db
+      AUTOMATON_LOG_FORMAT: json
+      AUTOMATON_LOG_LEVEL: INFO
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - automaton-data:/data
+    restart: unless-stopped
+    depends_on:
+      ui:
+        condition: service_healthy
+
+  ui:
+    image: automaton:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    command:
+      - automaton
+      - serve
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8080"
+      - --auto-migrate
+    env_file: .env
+    environment:
+      AUTOMATON_DB: /data/automaton.db
+      AUTOMATON_LOG_FORMAT: json
+      AUTOMATON_LOG_LEVEL: INFO
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - automaton-data:/data
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8080/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  automaton-data:
+    # Named volume — Docker manages the lifecycle.
+    # To persist across `docker compose down`, do NOT use `--volumes`.
+    # To inspect: docker volume inspect automaton_automaton-data

@@ -1,39 +1,59 @@
-# automaton  (v0.3.0)
+Metadata-Version: 2.4
+Name: automaton-engine
+Version: 0.3.0
+Summary: A strongly consistent personal automation platform
+Author-email: Richmond <730richey730@gmail.com>
+License: MIT
+Project-URL: Homepage, https://github.com/730richey730/echoes
+Project-URL: Repository, https://github.com/730richey730/echoes
+Project-URL: Bug Tracker, https://github.com/730richey730/echoes/issues
+Project-URL: Changelog, https://github.com/730richey730/echoes/blob/main/automaton/CHANGELOG.md
+Keywords: automation,workflow,scheduler,sqlite,cron,personal-infrastructure,agent
+Classifier: Development Status :: 4 - Beta
+Classifier: Intended Audience :: Developers
+Classifier: Intended Audience :: System Administrators
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: OS Independent
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: System :: Systems Administration
+Classifier: Topic :: Utilities
+Classifier: Typing :: Typed
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: httpx>=0.27
+Requires-Dist: croniter>=2.0
+Requires-Dist: yoyo-migrations>=9.0
+Requires-Dist: keyring>=25.0
+Requires-Dist: apprise>=1.10
+Provides-Extra: test
+Requires-Dist: pytest>=7.0; extra == "test"
+Requires-Dist: cryptography>=42.0; extra == "test"
+Requires-Dist: keyrings.alt>=5.0; extra == "test"
+Provides-Extra: tls
+Requires-Dist: cryptography>=42.0; extra == "tls"
+Provides-Extra: secrets-headless
+Requires-Dist: keyrings.alt>=5.0; extra == "secrets-headless"
+
+# automaton  (v0.2.0)
 
 A strongly consistent personal automation platform.
 
 Triggers fire workflows. Workflows are a DAG of steps. Every step's *observable* side effect happens exactly once, even when workers crash mid-step. State lives in a single SQLite database — back that one file up and you've backed up the system.
 
-**[Documentation →](https://730richey730.github.io/echoes/)** · [CHANGELOG](CHANGELOG.md) · [BACKUP](BACKUP.md) · [Live-test readiness](LIVE-TEST-READINESS.md)
+See the design rationale and trade-offs in [`../automation-system-design.md`](../automation-system-design.md). For deployment-day prep see [LIVE-TEST-READINESS.md](LIVE-TEST-READINESS.md). For backup strategy see [BACKUP.md](BACKUP.md).
 
 ## Install
 
 ```bash
-pip install automaton-engine
+cd automaton
+pip install -e .
 ```
 
-Requires Python 3.10+. Optional extras:
-
-```bash
-pip install "automaton-engine[tls]"               # automaton tls init
-pip install "automaton-engine[secrets-headless]"  # encrypted keyring on headless Linux
-```
-
-**Docker (quickest path to all three processes):**
-
-```bash
-git clone https://github.com/730richey730/echoes && cd echoes/automaton
-cp deploy/automaton.env.example .env   # set AUTOMATON_TOKEN
-docker compose up -d
-# UI at http://localhost:8080
-```
-
-**From source:**
-
-```bash
-git clone https://github.com/730richey730/echoes && cd echoes/automaton
-pip install -e ".[tls,secrets-headless]"
-```
+Requires Python 3.10+. Pulls in `pyyaml`, `httpx`, and `croniter`.
 
 ## End-to-end example
 
@@ -433,7 +453,7 @@ pip install pytest
 python -m pytest tests/
 ```
 
-All 409 tests should pass in under 30 seconds. The headline ones are:
+All 233 tests should pass in under 15 seconds. The headline ones are:
 - `test_exactly_once_under_crash` — kill the worker mid-step, assert exactly-once side effect.
 - `test_two_schedulers_one_run` — two scheduler threads on the same overdue trigger produce exactly one run.
 - `test_retries_succeed_on_third_attempt` — failing step retries successfully and the run completes.
