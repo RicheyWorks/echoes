@@ -1,18 +1,39 @@
-# Let's Encrypt renew via certbot, with a reload hook.
-#
-# Description: Runs `certbot renew` twice-weekly. If anything was
-#              renewed, reloads nginx so the new cert is picked up.
-# Required env: certbot installed (snap or apt), sudo configured for
-#               nginx reload
-# Cron: 17 2 * * 1,4         (Mon & Thu at 02:17 local)
-# Last verified: 2026-05-21
-name: letsencrypt-renew
+# Let's Encrypt certificate renewal via certbot.
+# Description: Runs certbot renew twice a week (Mon/Thu at 05:00) for DOMAIN.
+#   Reloads nginx if any cert was actually renewed. Fails loudly on certbot error.
+# Required secrets: none (certbot uses its own credential files)
+# Required env: certbot, nginx
+# Cron: "0 5 * * 1,4"
+# Last verified: 2026-05-23
+
+name: infra-letsencrypt-renew
+
+triggers:
+  - cron: "0 5 * * 1,4"
+
 steps:
   - name: renew
     type: shell
-    cmd: [sudo, certbot, renew, --quiet]
-    timeout: 600
-  - name: reload-nginx
+    cmd:
+      - sh
+      - -c
+      - certbot renew --webroot -w WEBROOT --quiet 2>&1
+
+  - name: reload_nginx
     type: shell
     needs: [renew]
-    cmd: [sudo, systemctl, reload, nginx]
+    cmd:
+      - sh
+      - -c
+      - |
+        if echo "${{ steps.renew.output.stdout }}" | grep -q "Congratulations"; then
+          nginx -s reload && echo "nginx reloaded"
+        else
+          echo "no renewal needed"
+        fi
+
+  - name: log_result
+    type: file_append
+    needs: [reload_nginx]
+    path: "LOG_FILE"
+    text: "run=${{ run.id }} certbot: ${{ steps.renew.output.stdout }}\n"

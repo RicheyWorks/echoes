@@ -1,19 +1,31 @@
-# Health check: fetch a URL every 5 minutes; alert via notify on failure.
-#
-# Description: Polls a website and the engine's notification config sends
-#              a ping if it stops returning 2xx. Pairs with
-#              AUTOMATON_NOTIFY_ON_FAILURE.
-# Required env: none
-# Cron: */5 * * * *
-# Last verified: 2026-05-21
-name: website-up
-urgent: true
+# HTTP health check — alerts when a site stops returning 200.
+# Description: Probes TARGET_URL every 15 minutes. Exits non-zero (triggering
+#   AUTOMATON_NOTIFY_ON_FAILURE if set) when the response code is not 200.
+# Required secrets: none
+# Required env: none (uses built-in http_get step)
+# Cron: "*/15 * * * *"
+# Last verified: 2026-05-23
+
+name: health-website-up
+
+triggers:
+  - cron: "*/15 * * * *"
+
 steps:
   - name: probe
     type: http_get
-    url: "${{ run.payload.url }}"
-    timeout: 10
-    retry:
-      max: 3
-      backoff: exponential
-      initial_seconds: 5
+    url: "TARGET_URL"
+    timeout_seconds: 10
+
+  - name: check_status
+    type: shell
+    needs: [probe]
+    cmd:
+      - sh
+      - -c
+      - |
+        code="${{ steps.probe.output.status_code }}"
+        if [ "$code" != "200" ]; then
+          echo "WARN: got HTTP $code" >&2; exit 1
+        fi
+        echo "OK: $code"

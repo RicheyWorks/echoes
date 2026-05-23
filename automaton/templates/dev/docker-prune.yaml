@@ -1,21 +1,30 @@
-# Weekly Docker cleanup: dangling images, stopped containers, build cache.
-#
-# Description: Frees disk on dev boxes that accumulate cruft. Reports
-#              before/after disk usage in the step output.
-# Required env: docker on PATH; user in the docker group
-# Cron: 0 4 * * SUN
-# Last verified: 2026-05-21
-name: docker-prune
+# Weekly Docker system prune to reclaim disk space.
+# Description: Runs docker container/image/volume/buildx prune every Sunday
+#   at 04:00, then appends a summary to LOG_FILE.
+# Required secrets: none
+# Required env: docker (user must be in the docker group)
+# Cron: "0 4 * * 0"
+# Last verified: 2026-05-23
+
+name: dev-docker-prune
+
+triggers:
+  - cron: "0 4 * * 0"
+
 steps:
-  - name: before
-    type: shell
-    cmd: [docker, system, df]
   - name: prune
     type: shell
-    needs: [before]
-    cmd: [docker, system, prune, -af, --volumes]
-    timeout: 600
-  - name: after
-    type: shell
+    cmd:
+      - sh
+      - -c
+      - |
+        docker container prune -f
+        docker image prune -f
+        docker volume prune -f
+        docker buildx prune -f
+
+  - name: log_summary
+    type: file_append
     needs: [prune]
-    cmd: [docker, system, df]
+    path: "LOG_FILE"
+    text: "run=${{ run.id }} docker prune done\n"

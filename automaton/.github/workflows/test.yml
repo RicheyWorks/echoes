@@ -73,3 +73,57 @@ jobs:
       - name: Twine check
         working-directory: automaton
         run: twine c
+  validate-templates:
+    name: Validate workflow templates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package
+        working-directory: automaton
+        run: pip install -e ".[dev]"
+
+      - name: Validate all templates via validate_spec
+        working-directory: automaton
+        run: |
+          python3 - << 'PYEOF'
+          import yaml, sys
+          from pathlib import Path
+          from automaton.engine import validate_spec
+
+          templates_dir = Path("templates")
+          errors = []
+          for path in sorted(templates_dir.glob("*/*.yaml")):
+              try:
+                  spec = yaml.safe_load(path.read_text(encoding="utf-8"))
+                  validate_spec(spec)
+                  print(f"  OK  {path}")
+              except Exception as e:
+                  errors.append((path, e))
+                  print(f"FAIL  {path}: {e}", file=sys.stderr)
+          if errors:
+              sys.exit(1)
+          print(f"\nAll {len(list(templates_dir.glob('*/*.yaml')))} templates valid.")
+          PYEOF
+
+      - name: Verify INDEX.md is current
+        working-directory: automaton
+        run: |
+          python3 - << 'PYEOF'
+          from automaton.templates import render_index
+          from pathlib import Path
+          expected = render_index()
+          actual = Path("templates/INDEX.md").read_text(encoding="utf-8")
+          if expected != actual:
+              print("ERROR: templates/INDEX.md is stale — run:")
+              print("  python3 -c 'from automaton.templates import render_index; "
+                    "print(render_index())' > templates/INDEX.md")
+              import sys; sys.exit(1)
+          print("INDEX.md is current.")
+          PYEOF

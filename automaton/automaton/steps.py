@@ -298,3 +298,187 @@ def _shell(spec, idempotency_key):
         "stdout": r.stdout[:10000],
         "stderr": r.stderr[:2000],
     }
+
+
+@step_type("python")
+def _python(spec, idempotency_key):
+    """Run a Python function in the current process.
+
+    stdout (print() calls) is captured and returned alongside the function's
+    return value. The return value must be JSON-serialisable; if it isn't,
+    its repr() is used instead.
+
+    spec fields:
+      module   (required): dotted module path, e.g. ``my_package.tasks``
+      function (required): function name within the module
+      kwargs   (optional): dict of keyword arguments passed to the function
+
+    Captured output is truncated to 50 000 chars to prevent runaway step
+    rows in the DB.
+
+    Notes:
+    - The function runs in the worker process with access to whatever is on
+      sys.path. If you need an isolated environment, use the ``shell`` step
+      type and invoke a subprocess.
+    - The step is NOT idempotent by default. If your function has external
+      side effects (writing files, calling APIs, sending email) it must guard
+      against re-execution itself. The idempotency key is available via the
+      AUTOMATON_IDEMPOTENCY_KEY env variable if you need to pass it in.
+    """
+    import contextlib
+    import importlib
+    import io
+    import os
+    import json as _json
+
+    module_name = spec.get("module")
+    func_name = spec.get("function")
+    kwargs = dict(spec.get("kwargs") or {})
+
+    if not module_name:
+        raise StepError("python: missing required field 'module'")
+    if not func_name:
+        raise StepError("python: missing required field 'function'")
+
+    # Expose the idempotency key as an env var so functions can read it.
+    old_val = os.environ.get("AUTOMATON_IDEMPOTENCY_KEY")
+    os.environ["AUTOMATON_IDEMPOTENCY_KEY"] = idempotency_key
+    try:
+        try:
+            mod = importlib.import_module(module_name)
+        except ImportError as e:
+            raise StepError(
+                f"python: cannot import module {module_name!r}: {e}",
+                {"module": module_name, "error": str(e)},
+            ) from e
+
+        try:
+            func = getattr(mod, func_name)
+        except AttributeError as e:
+            raise StepError(
+                f"python: no attribute {func_name!r} in {module_name!r}",
+                {"module": module_name, "function": func_name},
+            ) from e
+
+        stdout_buf = io.StringIO()
+        stderr_buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout_buf), \
+                 contextlib.redirect_stderr(stderr_buf):
+                result = func(**kwargs)
+        except StepError:
+            raise
+        except Exception as e:
+            raise StepError(
+                f"python: {module_name}.{func_name} raised {type(e).__name__}: {e}",
+                {"module": module_name, "function": func_name,
+                 "exception": type(e).__name__, "message": str(e)},
+            ) from e
+    finally:
+        if old_val is None:
+            os.environ.pop("AUTOMATON_IDEMPOTENCY_KEY", None)
+        else:
+            os.environ["AUTOMATON_IDEMPOTENCY_KEY"] = old_val
+
+    # Ensure return value is JSON-serialisable; fall back to repr().
+    try:
+        _json.dumps(result)
+        return_value = result
+    except (TypeError, ValueError):
+        return_value = repr(result)
+
+    stdout_text = stdout_buf.getvalue()[:50_000]
+    stderr_text = stderr_buf.getvalue()[:10_000]
+
+    output = {
+        "return_value": return_value,
+        "stdout": stdout_text,
+    }
+    if stderr_text:
+        output["stderr"] = stderr_text
+    return output
+
+
+@step_type("foreach")
+def _foreach(spec, idempotency_key, context=None):
+    """Fan-out step: run a nested step spec once per item in a list.
+
+    Spec fields
+    -----------
+    items     : list (or ${{...}} template that resolves to a list)
+    step      : dict — nested step spec (may contain ${{item}} and ${{item_index}})
+    fail_fast : bool — stop on first failure (default: True)
+
+    Template context inside ``step``
+    ---------------------------------
+    ${{ item }}        — the current element
+    ${{ item_index }}  — 0-based iteration index
+
+    Output
+    ------
+    {"results": [...], "count": N, "failed": K}
+    Each result entry: {"item": ..., "item_index": ..., "output": ...}
+                     or {"item": ..., "item_index": ..., "error": "..."}
+    """
+    import json as _json
+    from . import templating as _templating
+
+    items = spec.get("items")
+    step_template = spec.get("step")
+    fail_fast = spec.get("fail_fast", True)
+
+    if not isinstance(items, list):
+        raise StepError(
+            f"foreach: 'items' must be a list, got {type(items).__name__}",
+            {"items_type": type(items).__name__},
+        )
+    if not isinstance(step_template, dict):
+        raise StepError("foreach: 'step' must be a dict (nested step spec)")
+    if not step_template.get("type"):
+        raise StepError("foreach: nested 'step' is missing required field 'type'")
+
+    results: list = []
+    failed = 0
+
+    for i, item in enumerate(items):
+        # Build per-item template context.
+        if context is not None:
+            base_ctx = _templating._build_context(context.conn, context.run_id)
+        else:
+            base_ctx = {"run": {"id": None, "payload": {}}, "steps": {}}
+        base_ctx["item"] = item
+        base_ctx["item_index"] = i
+
+        # Render the nested step spec with item injected.
+        try:
+            rendered_step = _templating.render(step_template, base_ctx)
+        except _templating.TemplateError as e:
+            results.append({"item": item, "item_index": i, "error": str(e)})
+            failed += 1
+            if fail_fast:
+                raise StepError(
+                    f"foreach: template error at item {i} ({item!r}): {e}",
+                    {"results": results, "count": len(items), "failed": failed},
+                ) from e
+            continue
+
+        item_key = f"{idempotency_key}:item:{i}"
+        try:
+            out = run_step(rendered_step, item_key, context=context)
+            results.append({"item": item, "item_index": i, "output": out})
+        except StepError as e:
+            results.append({"item": item, "item_index": i, "error": str(e)})
+            failed += 1
+            if fail_fast:
+                raise StepError(
+                    f"foreach: item {i} ({item!r}) failed: {e}",
+                    {"results": results, "count": len(items), "failed": failed},
+                ) from e
+
+    if failed > 0 and not fail_fast:
+        raise StepError(
+            f"foreach: {failed}/{len(items)} items failed",
+            {"results": results, "count": len(items), "failed": failed},
+        )
+
+    return {"results": results, "count": len(items), "failed": failed}

@@ -66,8 +66,8 @@ def test_shell_step_string_form_runs(store, tmp_path):
     engine.worker_loop(store, stop_when_idle=True)
     detail = engine.run_detail(store, rid)
     assert detail["run"]["status"] == "completed", detail
-    step_out = detail["steps"][0]["output_json"]
-    assert "hello-from-string" in step_out
+    step_out = detail["steps"][0]["output"]  # parsed dict
+    assert "hello-from-string" in step_out.get("stdout", "")
 
 
 def test_shell_step_list_form_runs(store, tmp_path):
@@ -85,7 +85,7 @@ def test_shell_step_list_form_runs(store, tmp_path):
     engine.worker_loop(store, stop_when_idle=True)
     detail = engine.run_detail(store, rid)
     assert detail["run"]["status"] == "completed", detail
-    assert "hello-from-list" in detail["steps"][0]["output_json"]
+    assert "hello-from-list" in detail["steps"][0]["output"].get("stdout", "")
 
 
 def test_file_append_writes_utf8_with_lf(store, tmp_path):

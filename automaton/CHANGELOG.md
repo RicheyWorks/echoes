@@ -48,13 +48,18 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
   filter bar (status dropdown, workflow name input, after/before date
   pickers) that drives query-string-parameterised searches.
 - **Re-run button** — completed, failed, timed-out, and cancelled runs
-  show a ↺ Re-run button in the run-detail page. Clicking it POSTs to
+  show a Re-run button in the run-detail page. Clicking it POSTs to
   `POST /api/trigger/<workflow>` with the original trigger payload and
   redirects to the new run.
 - **`automaton inspect` filter flags** — `--status`, `--workflow`,
   `--after`, `--before`, `--limit` narrow the CLI run listing via
   `search_runs()`.
-
+- **`foreach` step type** — fan-out execution: runs a nested step spec
+  once per item in a list. Supports `${{ item }}` and `${{ item_index }}`
+  template references inside the nested spec. `fail_fast: true` (default)
+  stops on the first failure; `fail_fast: false` collects all results and
+  raises at the end. Output includes per-item results, total count, and
+  failed count.
 - Docker deployment: multi-stage `Dockerfile` (builder + slim runtime),
   `docker-compose.yml` with worker / scheduler / ui services, health-check
   on `/healthz`, named volume for the SQLite file.
@@ -63,7 +68,7 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.3.0] — 2026-05-22
+## [0.3.0] -- 2026-05-22
 
 ### Added
 - **Prometheus `/metrics` endpoint** — `GET /metrics` returns Prometheus
@@ -92,7 +97,7 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.2.0] — 2025-06-01
+## [0.2.0] -- 2025-06-01
 
 ### Added
 - **`timed_out` run status** — `timeout_seconds` column on workflow spec,
@@ -115,7 +120,7 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
   subcommands backed by `keyring`; `${secret:NAME}` spec references.
 - **Notifications** — Apprise integration, `AUTOMATON_NOTIFY_ON_FAILURE`,
   quiet hours, `automaton notify test` self-check.
-- **Backup & restore** — Litestream config template, `automaton restore`,
+- **Backup and restore** — Litestream config template, `automaton restore`,
   `PRAGMA integrity_check` on snapshot, CI restore drill.
 - **macOS host** (`deploy/macos/`) — launchd plists, install/uninstall
   script, path conventions.
@@ -142,7 +147,7 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 
 ---
 
-## [0.1.0] — 2025-01-15
+## [0.1.0] -- 2025-01-15
 
 ### Added
 - Initial release.
@@ -153,31 +158,7 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 - Worker with lease-based queue, crash recovery, configurable timeout.
 - `automaton` CLI: `register`, `trigger`, `worker`, `scheduler`, `serve`,
   `inspect`, `schedule`, `backup`.
-- Web dashboard — runs list, run detail, workflows list, cron list.
-- Bearer token auth on write routes; `/healthz` open.
-- 68 tests.
-
-[Unreleased]: https://github.com/RicheyWorks/echoes/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/RicheyWorks/echoes/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/RicheyWorks/echoes/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/RicheyWorks/echoes/releases/tag/v0.1.0
-- `automaton backup` now runs `PRAGMA integrity_check` and aborts on
-  corruption rather than silently copying a bad file.
-
----
-
-## [0.1.0] — 2025-01-15
-
-### Added
-- Initial release.
-- SQLite state store with WAL mode, exactly-once step execution via
-  idempotency keys (`sha256(run_id + step_name + attempt)`).
-- Step types: `shell`, `http_get`, `file_append`, `python`.
-- Cron scheduler with single-leader election via DB row lock.
-- Worker with lease-based queue, crash recovery, configurable timeout.
-- `automaton` CLI: `register`, `trigger`, `worker`, `scheduler`, `serve`,
-  `inspect`, `schedule`, `backup`.
-- Web dashboard — runs list, run detail, workflows list, cron list.
+- Web dashboard -- runs list, run detail, workflows list, cron list.
 - Bearer token auth on write routes; `/healthz` open.
 - 68 tests.
 

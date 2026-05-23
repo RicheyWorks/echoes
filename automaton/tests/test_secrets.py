@@ -153,7 +153,7 @@ def test_secret_value_redacted_from_step_output(keyring_backend, store, tmp_path
 
     detail = engine.run_detail(store, rid)
     assert detail["run"]["status"] == "completed"
-    out = json.loads(detail["steps"][0]["output_json"])
+    out = detail["steps"][0]["output"]  # already parsed dict
     # The actual secret value never appears in persisted output.
     assert "leak-me-please" not in json.dumps(detail)
     # The redacted placeholder does appear in the shell stdout.

@@ -171,6 +171,11 @@ def render(value: Any, ctx: dict[str, Any],
     if isinstance(value, str):
         return _render_string(value, ctx, secret_values)
     if isinstance(value, dict):
+        # For foreach steps, leave the nested "step" template unrendered so
+        # the foreach handler can render it per-item with item/item_index injected.
+        if value.get("type") == "foreach":
+            return {k: (v if k == "step" else render(v, ctx, secret_values))
+                    for k, v in value.items()}
         return {k: render(v, ctx, secret_values) for k, v in value.items()}
     if isinstance(value, list):
         return [render(v, ctx, secret_values) for v in value]

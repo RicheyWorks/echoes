@@ -1,33 +1,25 @@
-# Morning brief: pull a few RSS headlines, dump them to a notes file.
-#
-# Description: Fetches a feed URL, parses the top N entries, appends
-#              titles + links to a markdown file you read with your
-#              morning coffee.
-# Required env: python with feedparser available (`pip install feedparser`)
-# Cron: 30 7 * * *
-# Last verified: 2026-05-21
-name: morning-brief
-timezone: America/Los_Angeles
+# Daily morning digest — weather fetch written to a text file.
+# Description: Fetches weather from WEATHER_URL (wttr.in or similar) every
+#   morning at 07:00 and appends a formatted digest to BRIEF_FILE.
+#   Extend by adding steps for calendar, RSS, or other sources.
+# Required secrets: none
+# Required env: none (uses built-in http_get step)
+# Cron: "0 7 * * *"
+# Last verified: 2026-05-23
+
+name: personal-morning-brief
+
+triggers:
+  - cron: "0 7 * * *"
+
 steps:
-  - name: brief
-    type: shell
-    cmd:
-      - python
-      - -c
-      - |
-        import datetime
-        try:
-            import feedparser
-        except ImportError:
-            print("feedparser not installed; pip install feedparser")
-            raise SystemExit(0)
-        url = "${{ run.payload.feed_url }}"
-        n = int("${{ run.payload.count }}" or "5")
-        out = "${{ run.payload.target }}"
-        f = feedparser.parse(url)
-        with open(out, "a", encoding="utf-8") as fh:
-            today = datetime.date.today().isoformat()
-            fh.write(f"\n## {today}\n\n")
-            for e in f.entries[:n]:
-                fh.write(f"- [{e.title}]({e.link})\n")
-        print(f"appended {min(n, len(f.entries))} entries to {out}")
+  - name: fetch_weather
+    type: http_get
+    url: "WEATHER_URL"
+    timeout_seconds: 10
+
+  - name: write_brief
+    type: file_append
+    needs: [fetch_weather]
+    path: "BRIEF_FILE"
+    text: "=== Morning Brief run=${{ run.id }} ===\nWeather: ${{ steps.fetch_weather.output.body }}\n"

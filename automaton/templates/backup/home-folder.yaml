@@ -1,27 +1,29 @@
-# Daily backup of a home folder to Backblaze B2 via rclone.
-#
-# Description: Sync a local directory to a B2 bucket nightly. Sends a
-#              notification on failure.
-# Required secrets: B2_KEY_ID, B2_APP_KEY (set via `automaton secret set`)
-# Required env: rclone must be installed and on PATH
-# Cron: every day at 03:15 local
-# Last verified: 2026-05-21
+# Daily rclone backup of a local folder to a remote destination.
+# Description: Syncs SOURCE_DIR to a remote rclone destination every night at 03:00.
+#   Appends the exit code to a log file after each run.
+# Required secrets: none (rclone credentials live in rclone.conf)
+# Required env: rclone (brew install rclone / apt install rclone)
+# Cron: "0 3 * * *"
+# Last verified: 2026-05-23
+
 name: backup-home-folder
-timezone: America/New_York
+
+triggers:
+  - cron: "0 3 * * *"   # 03:00 every night
+
 steps:
-  - name: sync
+  - name: run_backup
     type: shell
     cmd:
       - rclone
       - sync
-      - "${{ run.payload.source }}"
-      - "b2:${{ run.payload.bucket }}/${{ run.payload.prefix }}"
-    env:
-      RCLONE_CONFIG_B2_TYPE: b2
-      RCLONE_CONFIG_B2_ACCOUNT: "${{ secret:B2_KEY_ID }}"
-      RCLONE_CONFIG_B2_KEY: "${{ secret:B2_APP_KEY }}"
-    timeout: 1800
-    retry:
-      max: 2
-      backoff: exponential
-      initial_seconds: 30
+      - "SOURCE_DIR"
+      - "REMOTE"
+      - --log-level
+      - INFO
+
+  - name: log_result
+    type: file_append
+    needs: [run_backup]
+    path: "LOG_FILE"
+    text: "run=${{ run.id }} backup exit=${{ steps.run_backup.output.returncode }}\n"

@@ -91,7 +91,7 @@ def test_step_parks_and_then_completes_on_signal(store, tmp_path):
     assert park["status"] == "completed"
     # Output should include the payload we sent.
     import json
-    output = json.loads(park["output_json"])
+    output = park["output"]  # already parsed dict
     assert output["signal_received"] == "ok"
     assert output["payload"] == {"result": 42}
 
@@ -158,4 +158,6 @@ def test_wait_for_signal_times_out(store, tmp_path):
     assert detail["run"]["status"] == "failed"
     park = [s for s in detail["steps"] if s["name"] == "park"][0]
     assert park["status"] == "failed"
-    assert "timed out" in (park["error_json"] or "")
+    err = park.get("error") or {}
+    err_str = err.get("message", "") if isinstance(err, dict) else str(err or "")
+    assert "timed out" in err_str

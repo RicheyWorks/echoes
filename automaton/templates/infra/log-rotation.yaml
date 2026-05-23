@@ -1,36 +1,34 @@
-# Rotate log files older than N days using Python's compress + delete.
-#
-# Description: For a target directory, gzip files older than N days and
-#              delete files older than M days. Self-contained: doesn't
-#              touch logrotate. Useful for app-managed logs.
-# Required env: python on PATH
-# Cron: 0 5 * * *
-# Last verified: 2026-05-21
-name: log-rotation
+# Daily log rotation — compress and prune automaton's own logs.
+# Description: Compresses *.log files in LOG_DIR at 00:05 nightly, then
+#   deletes compressed logs older than KEEP_DAYS days.
+# Required secrets: none
+# Required env: gzip, find
+# Cron: "5 0 * * *"
+# Last verified: 2026-05-23
+
+name: infra-log-rotation
+
+triggers:
+  - cron: "5 0 * * *"
+
 steps:
-  - name: rotate
+  - name: compress_logs
     type: shell
     cmd:
-      - python
+      - sh
       - -c
       - |
-        import os, gzip, shutil, time, sys
-        target = "${{ run.payload.target }}"
-        gz_after = int("${{ run.payload.gz_after_days }}" or "7")
-        rm_after = int("${{ run.payload.rm_after_days }}" or "60")
-        now = time.time()
-        gz_cut = now - gz_after * 86400
-        rm_cut = now - rm_after * 86400
-        gzipped = removed = 0
-        for f in os.listdir(target):
-            full = os.path.join(target, f)
-            if not os.path.isfile(full):
-                continue
-            mt = os.path.getmtime(full)
-            if f.endswith(".gz") and mt < rm_cut:
-                os.remove(full); removed += 1
-            elif not f.endswith(".gz") and mt < gz_cut:
-                with open(full, "rb") as src_f, gzip.open(full + ".gz", "wb") as dst:
-                    shutil.copyfileobj(src_f, dst)
-                os.remove(full); gzipped += 1
-        print(f"gzipped {gzipped}, removed {removed}")
+        for f in LOG_DIR/*.log; do
+          [ -f "$f" ] || continue
+          gzip -9 "$f" && echo "compressed $f"
+        done
+
+  - name: prune_old
+    type: shell
+    needs: [compress_logs]
+    cmd:
+      - sh
+      - -c
+      - |
+        find LOG_DIR -name "*.log.gz" -mtime +KEEP_DAYS -delete
+        echo "pruned files older than KEEP_DAYS days"

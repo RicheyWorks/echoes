@@ -1,30 +1,32 @@
-# Cert expiry check: warns if a TLS cert expires within 14 days.
-#
-# Description: Connects to a host:port, reads the server cert, fails the
-#              run (triggering the failure notification) if not_valid_after
-#              is within 14 days.
-# Required env: openssl on PATH
-# Cron: 0 9 * * MON         (every Monday 9am local)
-# Last verified: 2026-05-21
-name: cert-expiry
+# TLS certificate expiry checker.
+# Description: Checks the TLS cert for DOMAIN every Monday morning. Fails
+#   (and alerts) when fewer than WARN_DAYS days remain before expiry.
+# Required secrets: none
+# Required env: openssl
+# Cron: "0 9 * * 1"
+# Last verified: 2026-05-23
+
+name: health-cert-expiry
+
+triggers:
+  - cron: "0 9 * * 1"   # 09:00 every Monday
+
 steps:
-  - name: check
+  - name: check_expiry
     type: shell
     cmd:
-      - python
+      - sh
       - -c
       - |
-        import socket, ssl, datetime, sys
-        host = "${{ run.payload.host }}"
-        port = int("${{ run.payload.port }}" or "443")
-        ctx = ssl.create_default_context()
-        with socket.create_connection((host, port), timeout=10) as s:
-            with ctx.wrap_socket(s, server_hostname=host) as ws:
-                cert = ws.getpeercert()
-        not_after = datetime.datetime.strptime(
-            cert["notAfter"], "%b %d %H:%M:%S %Y %Z"
-        )
-        days = (not_after - datetime.datetime.utcnow()).days
-        print(f"{host}:{port} expires in {days} days ({not_after})")
-        if days < 14:
-            sys.exit(1)
+        domain="DOMAIN"
+        warn_days=WARN_DAYS
+        expiry=$(echo | openssl s_client -servername "$domain" \
+          -connect "$domain":443 2>/dev/null \
+          | openssl x509 -noout -enddate 2>/dev/null \
+          | cut -d= -f2)
+        [ -z "$expiry" ] && { echo "ERROR: no cert for $domain" >&2; exit 1; }
+        expiry_epoch=$(date -d "$expiry" +%s 2>/dev/null \
+          || date -j -f "%b %d %T %Y %Z" "$expiry" +%s)
+        days_left=$(( (expiry_epoch - $(date +%s)) / 86400 ))
+        echo "days_left=$days_left"
+        [ "$days_left" -lt "$warn_days" ] && { echo "WARN: $days_left days left" >&2; exit 1; }
