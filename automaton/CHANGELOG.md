@@ -173,3 +173,9 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
   downstream steps are still queued. Skipped steps do not fail the run.
   Supports `${{ steps.<name>.output.<key> }}` and `${{ steps.<name>.status }}`
   references so conditional logic is driven by real upstream results.
+- **`automaton run <spec.yaml>`** — one-shot local execution: registers the
+  workflow, triggers a run, drains the worker, prints a formatted step
+  summary, and exits with code `0` (completed) or `1` (failed / timed-out /
+  cancelled). Accepts `--payload JSON` and `--timeout N` (seconds; 0 = no
+  limit). Designed for use in shell scripts and CI pipelines without a
+  running server.

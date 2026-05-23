@@ -64,6 +64,87 @@ def _open():
     return conn
 
 
+
+def _print_run_summary(detail):
+    """Print a human-readable run summary to stdout."""
+    run = detail["run"]
+    icons = {"completed": "✓", "failed": "✗", "skipped": "–",
+             "cancelled": "⊘", "timed_out": "⏱", "running": "…"}
+    for step in detail["steps"]:
+        icon = icons.get(step["status"], "?")
+        print(f"    {icon}  {step['name']:<28} {step['status']}")
+        out = step.get("output")
+        if isinstance(out, dict):
+            if "returncode" in out:
+                stdout_lines = (out.get("stdout") or "").strip().splitlines()
+                for line in stdout_lines[:3]:
+                    print(f"           {line}")
+                if len(stdout_lines) > 3:
+                    print(f"           … ({len(stdout_lines) - 3} more lines)")
+                if out.get("stderr", "").strip():
+                    for line in out["stderr"].strip().splitlines()[:2]:
+                        print(f"      stderr: {line}")
+            elif "return_value" in out:
+                print(f"           → {out['return_value']!r}")
+        err = step.get("error")
+        if err and isinstance(err, dict):
+            print(f"      error: {err.get('message', '')}")
+    print()
+    icon = icons.get(run["status"], "?")
+    print(f"  {icon}  {run['status'].upper()}")
+
+
+def cmd_run(args):
+    """One-shot local execution: register, trigger, drain worker, summarize."""
+    import time
+
+    spec_path = Path(args.spec_file)
+    if not spec_path.exists():
+        print(f"error: file not found: {spec_path}", file=sys.stderr)
+        return 1
+    try:
+        spec = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"error: could not parse YAML: {e}", file=sys.stderr)
+        return 1
+
+    conn = _open()
+    try:
+        engine.register_workflow(conn, spec)
+    except (ValueError, KeyError) as e:
+        print(f"error: invalid workflow spec: {e}", file=sys.stderr)
+        return 1
+
+    payload = None
+    if args.payload:
+        try:
+            payload = json.loads(args.payload)
+        except json.JSONDecodeError as e:
+            print(f"error: --payload is not valid JSON: {e}", file=sys.stderr)
+            return 1
+
+    run_id = engine.trigger_run(conn, spec["name"], "cli-run", payload)
+    print(f"automaton run  workflow={spec['name']!r}  run_id={run_id}")
+    print()
+
+    timeout = args.timeout if args.timeout else None
+    deadline = (time.monotonic() + timeout) if timeout else None
+
+    while True:
+        engine.worker_loop(conn, stop_when_idle=True)
+        detail = engine.run_detail(conn, run_id)
+        run_status = detail["run"]["status"]
+        if run_status not in ("pending", "running"):
+            break
+        if deadline and time.monotonic() > deadline:
+            print(f"error: timed out after {timeout}s", file=sys.stderr)
+            return 1
+        time.sleep(0.1)
+
+    _print_run_summary(detail)
+    return 0 if run_status == "completed" else 1
+
+
 def cmd_register(args):
     spec = yaml.safe_load(Path(args.spec_file).read_text(encoding="utf-8"))
     conn = _open()
@@ -794,6 +875,17 @@ def main(argv=None):
     p_init.add_argument("--list", action="store_true",
                           help="list available templates and exit")
     p_init.set_defaults(func=cmd_init)
+
+    p_run = sub.add_parser(
+        "run",
+        help="one-shot: register, trigger, run worker, print results, exit 0/1",
+    )
+    p_run.add_argument("spec_file", help="path to workflow YAML file")
+    p_run.add_argument("--payload", default=None,
+                        help="JSON object to use as the trigger payload")
+    p_run.add_argument("--timeout", type=int, default=0,
+                        help="wall-clock timeout in seconds (0 = no limit)")
+    p_run.set_defaults(func=cmd_run)
 
     args = p.parse_args(argv)
     if not hasattr(args, "func"):
