@@ -38,12 +38,12 @@ Move items from `[Unreleased]` into a new versioned section:
 ### Added
 - ...
 
-[0.4.0]: https://github.com/730richey730/echoes/compare/v0.3.0...v0.4.0
+[0.4.0]: https://github.com/RicheyWorks/echoes/compare/v0.3.0...v0.4.0
 ```
 
 Update the `[Unreleased]` comparison link at the bottom:
 ```markdown
-[Unreleased]: https://github.com/730richey730/echoes/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/RicheyWorks/echoes/compare/v0.4.0...HEAD
 ```
 
 ### 2. Bump the version in pyproject.toml
@@ -83,8 +83,8 @@ This triggers the `release.yml` workflow, which:
 ### 6. Verify
 
 - **PyPI**: https://pypi.org/project/automaton-engine/ — new version should appear within a minute.
-- **GitHub Release**: https://github.com/730richey730/echoes/releases — check the release notes look right.
-- **Docs**: https://730richey730.github.io/echoes/ — updated on the push to main in step 4.
+- **GitHub Release**: https://github.com/RicheyWorks/echoes/releases — check the release notes look right.
+- **Docs**: https://RicheyWorks.github.io/echoes/ — updated on the push to main in step 4.
 - **Install test**: `pip install automaton-engine==0.4.0 && automaton --help`
 
 ---
@@ -110,7 +110,7 @@ git tag v0.3.0
 git push --tags
 ```
 
-Then watch the Actions tab: https://github.com/730richey730/echoes/actions
+Then watch the Actions tab: https://github.com/RicheyWorks/echoes/actions
 
 ---
 

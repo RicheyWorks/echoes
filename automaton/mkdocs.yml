@@ -1,8 +1,8 @@
 site_name: automaton
 site_description: A strongly consistent personal automation platform
-site_url: https://730richey730.github.io/echoes/
-repo_url: https://github.com/730richey730/echoes
-repo_name: 730richey730/echoes
+site_url: https://RicheyWorks.github.io/echoes/
+repo_url: https://github.com/RicheyWorks/echoes
+repo_name: RicheyWorks/echoes
 edit_uri: edit/main/automaton/docs/
 
 docs_dir: docs
@@ -54,7 +54,7 @@ markdown_extensions:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/730richey730/echoes
+      link: https://github.com/RicheyWorks/echoes
 
 nav:
   - Home: index.md

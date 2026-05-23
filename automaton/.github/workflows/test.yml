@@ -72,28 +72,4 @@ jobs:
 
       - name: Twine check
         working-directory: automaton
-        run: twine check dist/*
-
-  publish-check:
-    name: Build wheel + twine check
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: automaton
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: pip
-
-      - name: Install build tools
-        run: pip install build twine
-
-      - name: Build
-        run: python -m build
-
-      - name: Twine check
-        run: twine check dist/*
+        run: twine c

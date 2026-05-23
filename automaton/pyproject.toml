@@ -39,10 +39,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage       = "https://github.com/730richey730/echoes"
-Repository     = "https://github.com/730richey730/echoes"
-"Bug Tracker"  = "https://github.com/730richey730/echoes/issues"
-Changelog      = "https://github.com/730richey730/echoes/blob/main/automaton/CHANGELOG.md"
+Homepage       = "https://github.com/RicheyWorks/echoes"
+Repository     = "https://github.com/RicheyWorks/echoes"
+"Bug Tracker"  = "https://github.com/RicheyWorks/echoes/issues"
+Changelog      = "https://github.com/RicheyWorks/echoes/blob/main/automaton/CHANGELOG.md"
 
 [project.optional-dependencies]
 # Run the test suite.

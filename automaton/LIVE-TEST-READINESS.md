@@ -203,4 +203,4 @@ Day 1: deploy, smoke-test, leave a heartbeat workflow on a cron (every 5 minutes
 Day 2: kill a worker, confirm recovery; restart the scheduler, confirm exactly-one-fire.
 Day 3: take a backup, restore to a second machine, confirm the second machine sees the same runs.
 Day 4-7: leave it running with whatever real workflows you want to try.
-End of test: dump the event_log; count side effects vs. expected.
+End of test: dump

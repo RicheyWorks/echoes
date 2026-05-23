@@ -6,7 +6,7 @@ The repo ships a multi-stage `Dockerfile` and a `docker-compose.yml` that bring 
 
 ```bash
 # 1. Clone and enter the automaton directory
-git clone https://github.com/730richey730/echoes && cd echoes/automaton
+git clone https://github.com/RicheyWorks/echoes && cd echoes/automaton
 
 # 2. Create your env file (never commit this)
 cp deploy/automaton.env.example .env

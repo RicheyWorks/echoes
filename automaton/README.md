@@ -4,7 +4,7 @@ A strongly consistent personal automation platform.
 
 Triggers fire workflows. Workflows are a DAG of steps. Every step's *observable* side effect happens exactly once, even when workers crash mid-step. State lives in a single SQLite database — back that one file up and you've backed up the system.
 
-**[Documentation →](https://730richey730.github.io/echoes/)** · [CHANGELOG](CHANGELOG.md) · [BACKUP](BACKUP.md) · [Live-test readiness](LIVE-TEST-READINESS.md)
+**[Documentation →](https://RicheyWorks.github.io/echoes/)** · [CHANGELOG](CHANGELOG.md) · [BACKUP](BACKUP.md) · [Live-test readiness](LIVE-TEST-READINESS.md)
 
 ## Install
 
@@ -22,7 +22,7 @@ pip install "automaton-engine[secrets-headless]"  # encrypted keyring on headles
 **Docker (quickest path to all three processes):**
 
 ```bash
-git clone https://github.com/730richey730/echoes && cd echoes/automaton
+git clone https://github.com/RicheyWorks/echoes && cd echoes/automaton
 cp deploy/automaton.env.example .env   # set AUTOMATON_TOKEN
 docker compose up -d
 # UI at http://localhost:8080
@@ -31,7 +31,7 @@ docker compose up -d
 **From source:**
 
 ```bash
-git clone https://github.com/730richey730/echoes && cd echoes/automaton
+git clone https://github.com/RicheyWorks/echoes && cd echoes/automaton
 pip install -e ".[tls,secrets-headless]"
 ```
 
@@ -870,6 +870,4 @@ The production SQLite PRAGMAs (`WAL`, `synchronous=NORMAL`,
 ## Limitations to know about
 
 - **One host.** SQLite WAL handles many readers and one writer per database. Multiple worker *processes* on the same host work fine. Multiple hosts mean Postgres.
-- **`automaton serve` binds to localhost by default.** Set `AUTOMATON_TOKEN` and put a TLS-terminating reverse proxy in front before going public. Never combine `--host 0.0.0.0` with `--insecure-no-auth`.
-- **Step authors own idempotency.** The engine refuses to be lied to — it won't pretend retries are safe. New step types must explicitly honor the idempotency key.
-- **Editing a workflow YAML does nothing until re-registered.** New versions auto-bump; in-flight runs pin to the version they started with.
+- **`automaton serve` binds to localhost by def

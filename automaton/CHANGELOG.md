@@ -112,7 +112,7 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 - Bearer token auth on write routes; `/healthz` open.
 - 68 tests.
 
-[Unreleased]: https://github.com/730richey730/echoes/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/730richey730/echoes/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/730richey730/echoes/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/730richey730/echoes/releases/tag/v0.1.0
+[Unreleased]: https://github.com/RicheyWorks/echoes/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/RicheyWorks/echoes/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/RicheyWorks/echoes/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/RicheyWorks/echoes/releases/tag/v0.1.0

@@ -27,7 +27,7 @@ pip install "automaton-engine[tls,secrets-headless]"
 ## From source
 
 ```bash
-git clone https://github.com/730richey730/echoes
+git clone https://github.com/RicheyWorks/echoes
 cd echoes/automaton
 pip install -e ".[tls,secrets-headless]"
 ```
