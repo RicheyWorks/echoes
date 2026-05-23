@@ -94,6 +94,7 @@ def _page(title, body, auto_refresh=None, extra_head=""):
   <div class="max-w-4xl mx-auto px-4 py-4 sm:py-6">
     <nav class="flex items-center gap-4 mb-6 text-sm">
       <a href="/" class="font-semibold text-slate-900 hover:text-blue-700">Runs</a>
+      <a href="/workflows" class="text-slate-600 hover:text-blue-700">Workflows</a>
       <a href="/crons" class="text-slate-600 hover:text-blue-700">Cron triggers</a>
       <span class="ml-auto text-xs text-slate-400">automaton</span>
     </nav>
@@ -143,12 +144,48 @@ def _ts(val) -> str:
     return f'<time class="utc-ts" datetime="{html.escape(iso)}">{html.escape(s)}</time>'
 
 
-def render_run_list(conn):
-    runs = engine.list_runs(conn, limit=50)
+def render_run_list(conn, *, status=None, workflow=None, after=None, before=None):
+    filtering = any(x is not None for x in (status, workflow, after, before))
+    if filtering:
+        runs = engine.search_runs(
+            conn,
+            status=status or None,
+            workflow=workflow or None,
+            after=after or None,
+            before=before or None,
+            limit=100,
+        )
+    else:
+        runs = engine.list_runs(conn, limit=50)
+
+    statuses = ["", "pending", "running", "completed", "failed", "timed_out", "cancelled"]
+    status_opts = "".join(
+        f'<option value="{s}" {"selected" if s == (status or "") else ""}>{s or "all"}</option>'
+        for s in statuses
+    )
+    wf_val = html.escape(workflow or "")
+    after_val = html.escape(after or "")
+    before_val = html.escape(before or "")
+    filter_bar = (
+        '<form method="get" action="/" class="flex flex-wrap gap-2 mb-4 items-end">'
+        '<div class="flex flex-col gap-0.5"><label class="text-xs text-slate-500">Status</label>'
+        f'<select name="status" class="border border-slate-300 rounded px-2 py-1 text-sm">' + status_opts + '</select></div>'
+        '<div class="flex flex-col gap-0.5"><label class="text-xs text-slate-500">Workflow</label>'
+        f'<input name="workflow" value="{wf_val}" placeholder="name\u2026" class="border border-slate-300 rounded px-2 py-1 text-sm w-40"></div>'
+        '<div class="flex flex-col gap-0.5"><label class="text-xs text-slate-500">After (UTC)</label>'
+        f'<input name="after" type="datetime-local" value="{after_val}" class="border border-slate-300 rounded px-2 py-1 text-sm"></div>'
+        '<div class="flex flex-col gap-0.5"><label class="text-xs text-slate-500">Before (UTC)</label>'
+        f'<input name="before" type="datetime-local" value="{before_val}" class="border border-slate-300 rounded px-2 py-1 text-sm"></div>'
+        '<button type="submit" class="bg-blue-600 text-white px-3 py-1 rounded text-sm hover:bg-blue-700">Filter</button>'
+        '<a href="/" class="text-sm text-slate-500 hover:underline self-end pb-0.5">Clear</a>'
+        '</form>'
+    )
+
     if not runs:
-        body = ('<h1 class="text-xl font-semibold mb-4">Runs</h1>'
-                '<p class="text-slate-500">No runs yet.</p>')
-        return _page("automaton - runs", body, auto_refresh=5)
+        return _page("automaton - runs",
+                     '<h1 class="text-xl font-semibold mb-4">Runs</h1>' + filter_bar +
+                     '<p class="text-slate-500">No matching runs.</p>',
+                     auto_refresh=0 if filtering else 5)
 
     # Desktop: table. Mobile: card list. Same data twice, with the
     # complementary visibility classes; cheap enough not to bother with
@@ -181,20 +218,167 @@ def render_run_list(conn):
 
     body = (
         '<h1 class="text-xl font-semibold mb-4">Runs</h1>'
-        # Mobile-only cards (block on <sm, hidden ≥sm).
-        '<div class="flex flex-col gap-2 sm:hidden">' + "".join(cards) + '</div>'
-        # Desktop-only table.
-        '<div class="hidden sm:block overflow-x-auto">'
-        '<table class="w-full text-sm bg-white border border-slate-200 rounded-lg overflow-hidden">'
-        '<thead class="bg-slate-100 text-slate-600 text-xs uppercase">'
-        '<tr><th class="text-left py-2 px-3">#</th><th class="text-left py-2 px-3">Workflow</th>'
-        '<th class="text-left py-2 px-3">Status</th>'
-        '<th class="text-left py-2 px-3">Started</th>'
-        '<th class="text-left py-2 px-3">Finished</th></tr></thead>'
-        f'<tbody>{"".join(table_rows)}</tbody></table></div>'
-        '<p class="text-xs text-slate-400 mt-4">Auto-refreshes every 5 seconds.</p>'
+        + filter_bar
+        + '<div class="flex flex-col gap-2 sm:hidden">' + "".join(cards) + '</div>'
+        + '<div class="hidden sm:block overflow-x-auto">'
+        + '<table class="w-full text-sm bg-white border border-slate-200 rounded-lg overflow-hidden">'
+        + '<thead class="bg-slate-100 text-slate-600 text-xs uppercase">'
+        + '<tr><th class="text-left py-2 px-3">#</th><th class="text-left py-2 px-3">Workflow</th>'
+        + '<th class="text-left py-2 px-3">Status</th>'
+        + '<th class="text-left py-2 px-3">Started</th>'
+        + '<th class="text-left py-2 px-3">Finished</th></tr></thead>'
+        + f'<tbody>{"".join(table_rows)}</tbody></table></div>'
+        + '<p class="text-xs text-slate-400 mt-4">' + (f'{len(runs)} run(s) found.' if filtering else 'Auto-refreshes every 5 seconds.') + '</p>'
     )
-    return _page("automaton - runs", body, auto_refresh=5)
+    return _page("automaton - runs", body, auto_refresh=0 if filtering else 5)
+
+
+def _render_step_output(out, err):
+    """Render step output+error as HTML. Detects step type from output keys."""
+    import json as _json_rso
+    blocks = []
+
+    def _pre(label, text, cls="bg-slate-50"):
+        if not text:
+            return ""
+        label_html = f'<span class="text-xs font-medium text-slate-500 mb-0.5 block">{html.escape(label)}</span>'
+        return (f'<div class="mt-2">{label_html}'
+                f'<pre class="text-xs {cls} rounded p-2 overflow-x-auto whitespace-pre-wrap break-words">'
+                + html.escape(str(text)) + '</pre></div>')
+
+    if out is None and err is None:
+        return ""
+
+    if isinstance(err, dict) and err.get("message"):
+        blocks.append(_pre("Error", err.get("message", ""), "bg-red-50"))
+        if err.get("detail"):
+            blocks.append(_pre("Detail", _json_rso.dumps(err["detail"], indent=2), "bg-red-50"))
+        return "".join(blocks)
+
+    if isinstance(out, dict):
+        if "returncode" in out:
+            rc = out.get("returncode", "?")
+            rc_cls = "bg-green-100 text-green-800" if rc == 0 else "bg-red-100 text-red-800"
+            blocks.append(f'<span class="inline-block mt-2 text-xs font-mono px-2 py-0.5 rounded {rc_cls}">exit {rc}</span>')
+            blocks.append(_pre("stdout", out.get("stdout", "")))
+            blocks.append(_pre("stderr", out.get("stderr", ""), "bg-yellow-50"))
+        elif "status_code" in out:
+            code = out.get("status_code", "?")
+            ok = isinstance(code, int) and 200 <= code < 300
+            cc = "bg-green-100 text-green-800" if ok else "bg-red-100 text-red-800"
+            blocks.append(f'<span class="inline-block mt-2 text-xs font-mono px-2 py-0.5 rounded {cc}">HTTP {code}</span>')
+            blocks.append(_pre("body", out.get("body", "") or out.get("text", "")))
+        elif "return_value" in out:
+            blocks.append(_pre("stdout", out.get("stdout", "")))
+            blocks.append(_pre("stderr", out.get("stderr", ""), "bg-yellow-50"))
+            rv = out.get("return_value")
+            if rv is not None:
+                rv_str = _json_rso.dumps(rv, indent=2) if not isinstance(rv, str) else rv
+                blocks.append(_pre("return value", rv_str, "bg-blue-50"))
+        elif "appended" in out:
+            flag = out.get("appended", False)
+            lbl_cls = "bg-green-100 text-green-800" if flag else "bg-slate-100 text-slate-600"
+            blocks.append(f'<span class="inline-block mt-2 text-xs px-2 py-0.5 rounded {lbl_cls}">'
+                          + ("written" if flag else "no-op") + '</span>')
+        else:
+            blocks.append(_pre("output", _json_rso.dumps(out, indent=2)))
+    elif out is not None:
+        blocks.append(_pre("output", str(out)))
+
+    if isinstance(err, str) and err:
+        blocks.append(_pre("error", err, "bg-red-50"))
+
+    return "".join(blocks)
+
+
+def _rerun_button(run):
+    """HTML Re-run button for terminal runs."""
+    import json as _json_rb
+    wf = html.escape(run["workflow"])
+    rid = run["id"]
+    payload_js = html.escape(_json_rb.dumps(run.get("trigger_payload") or {}), quote=True)
+    return (
+        f'<button onclick="rerunRun({rid},\'{wf}\',\'{payload_js}\')" '
+        'class="text-sm bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded px-3 py-1">&#x21ba; Re-run</button>'
+        '<script>'
+        'function rerunRun(rid,wf,ps){'
+        'var p={};try{p=JSON.parse(ps);}catch(e){}'
+        'var t=(new URLSearchParams(window.location.search)).get("token")||"";'
+        'fetch("/api/trigger/"+wf,{method:"POST",'
+        'headers:{"Content-Type":"application/json","Authorization":"Bearer "+t},'
+        'body:JSON.stringify({payload:p})})'
+        '.then(r=>r.json()).then(d=>{'
+        'if(d.run_id)window.location.href="/run/"+d.run_id+window.location.search;'
+        'else alert(JSON.stringify(d));}).catch(e=>alert(e));}'
+        '</script>'
+    )
+
+
+def render_workflows(conn):
+    """Registered workflow definitions + inline YAML editor."""
+    workflows = engine.list_workflows(conn)
+    cards = []
+    for wf in workflows:
+        name = html.escape(wf["name"])
+        spec = wf.get("spec") or {}
+        steps = spec.get("steps") or []
+        step_names = ", ".join(html.escape(s["name"]) for s in steps[:5])
+        if len(steps) > 5:
+            step_names += f" +{len(steps) - 5} more"
+        ver = wf["version"]
+        cards.append(
+            '<div class="bg-white border border-slate-200 rounded-lg p-3 flex flex-col gap-2">'
+            '<div class="flex items-baseline justify-between gap-2">'
+            f'<span class="font-semibold">{name}</span>'
+            f'<span class="text-xs text-slate-400">v{ver}</span>'
+            '</div>'
+            f'<p class="text-xs text-slate-500">{len(steps)} step{"s" if len(steps) != 1 else ""}'
+            + (f': {step_names}' if step_names else '') +
+            '</p>'
+            f'<button onclick="triggerWorkflow(\'{name}\')" '
+            'class="self-start text-xs bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-700">'
+            '&#9654; Trigger</button>'
+            '</div>'
+        )
+
+    editor = (
+        '<div class="bg-white border border-slate-200 rounded-lg p-4 mt-6">'
+        '<h2 class="text-sm font-semibold mb-2">Register / update workflow</h2>'
+        '<textarea id="wf-editor" rows="14" '
+        'class="w-full font-mono text-xs border border-slate-300 rounded p-2" '
+        'placeholder="Paste YAML workflow spec here\u2026"></textarea>'
+        '<div class="flex gap-2 mt-2">'
+        '<button onclick="registerWorkflow()" '
+        'class="text-sm bg-blue-600 text-white px-3 py-1 rounded hover:bg-blue-700">Register</button>'
+        '<span id="wf-msg" class="text-xs self-center text-slate-500"></span>'
+        '</div></div>'
+        '<script>'
+        'var _tok=(new URLSearchParams(window.location.search)).get("token")||"";'
+        'function registerWorkflow(){'
+        'var txt=document.getElementById("wf-editor").value;'
+        'var msg=document.getElementById("wf-msg");'
+        'fetch("/api/workflows",{method:"POST",'
+        'headers:{"Content-Type":"application/yaml","Authorization":"Bearer "+_tok},'
+        'body:txt}).then(r=>r.json()).then(d=>{'
+        'msg.textContent=d.error||("Registered "+d.name+" (id "+d.workflow_def_id+")");'
+        'if(!d.error)setTimeout(()=>location.reload(),800);'
+        '}).catch(e=>{msg.textContent=String(e);});}'
+        'function triggerWorkflow(n){'
+        'fetch("/api/trigger/"+n,{method:"POST",'
+        'headers:{"Content-Type":"application/json","Authorization":"Bearer "+_tok},'
+        'body:JSON.stringify({})}).then(r=>r.json()).then(d=>{'
+        'if(d.run_id)window.location.href="/run/"+d.run_id+(window.location.search||"");'
+        'else alert(JSON.stringify(d));}).catch(e=>alert(e));}'
+        '</script>'
+    )
+
+    body = (
+        '<h1 class="text-xl font-semibold mb-4">Workflows</h1>'
+        + ('<div class="grid sm:grid-cols-2 gap-3 mb-2">' + "".join(cards) + '</div>' if cards
+           else '<p class="text-slate-500 mb-2">No workflows registered yet.</p>')
+        + editor
+    )
+    return _page("automaton - workflows", body)
 
 
 def render_run_detail(conn, run_id):
@@ -207,15 +391,9 @@ def render_run_detail(conn, run_id):
 
     step_rows = []
     for s in d["steps"]:
-        out = s.get("output_json")
-        err = s.get("error_json")
-        body_pre = ""
-        if out:
-            body_pre += ('<pre class="text-xs bg-slate-50 p-2 rounded overflow-x-auto">'
-                         f'{html.escape(out)}</pre>')
-        if err:
-            body_pre += ('<pre class="text-xs bg-rose-50 text-rose-700 p-2 rounded overflow-x-auto mt-1">'
-                         f'{html.escape(err)}</pre>')
+        out = s.get("output")
+        err = s.get("error")
+        body_pre = _render_step_output(out, err)
         step_rows.append(
             '<div class="bg-white border border-slate-200 rounded-lg p-3">'
             '<div class="flex items-baseline justify-between gap-2">'
@@ -266,7 +444,10 @@ def render_run_detail(conn, run_id):
         f'<div class="flex items-baseline justify-between gap-4 flex-wrap mb-4">'
         f'<h1 class="text-xl font-semibold">Run {run["id"]}'
         f' <span class="text-base text-slate-500 font-normal">{html.escape(run["workflow"])} v{run["version"]}</span></h1>'
+        f'<div class="flex items-center gap-3">'
         f'<div>Status: <strong id="run-status" class="{_STATUS_TEXT.get(run["status"], "")}">{run["status"]}</strong></div>'
+        + (_rerun_button(run) if run["status"] in ("completed", "failed", "timed_out", "cancelled") else "")
+        + '</div>'
         '</div>'
 
         '<h2 class="text-sm uppercase tracking-wide text-slate-500 mb-2">Steps</h2>'
@@ -485,7 +666,18 @@ def make_handler(db_path: str, auth_token: Optional[str], require_auth: bool,
             conn = _db.connect(db_path)
             try:
                 if path in ("/", "/runs", "/runs/"):
-                    self._send(200, render_run_list(conn)); return
+                    from urllib.parse import urlparse as _up2, parse_qs as _pqs2
+                    _qs2 = _pqs2(_up2(self.path).query, keep_blank_values=False)
+                    def _first2(k): v = _qs2.get(k); return v[0] if v else None
+                    self._send(200, render_run_list(
+                        conn,
+                        status=_first2("status"),
+                        workflow=_first2("workflow"),
+                        after=_first2("after"),
+                        before=_first2("before"),
+                    )); return
+                if path in ("/workflows", "/workflows/"):
+                    self._send(200, render_workflows(conn)); return
                 m = _RUN_RE.match(path)
                 if m:
                     body, st = render_run_detail(conn, int(m.group(1)))

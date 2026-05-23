@@ -442,6 +442,29 @@ def _log_event(conn, run_id, kind, payload):
     )
 
 
+
+
+def list_workflows(conn):
+    """Return the latest version of every registered workflow definition.
+
+    Each entry includes the parsed spec so callers can inspect steps,
+    timeout, etc. without a separate query.
+    """
+    rows = conn.execute(
+        "SELECT id, name, version, spec_json, timeout_seconds "
+        "FROM workflow_def w1 "
+        "WHERE version = ("
+        "  SELECT MAX(version) FROM workflow_def w2 WHERE w2.name = w1.name"
+        ") "
+        "ORDER BY name",
+    ).fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        d["spec"] = _db.from_json(d.pop("spec_json"))
+        result.append(d)
+    return result
+
 def list_runs(conn, limit=20):
     rows = conn.execute(
         "SELECT r.id, w.name AS workflow, r.status, r.started_at, r.finished_at "
@@ -451,6 +474,44 @@ def list_runs(conn, limit=20):
     ).fetchall()
     return [dict(r) for r in rows]
 
+
+
+def search_runs(conn, *, status=None, workflow=None, after=None, before=None, limit=50):
+    """Filter runs by status, workflow name, and/or date range.
+
+    Parameters
+    ----------
+    status   : str or None — one of the valid run status values, e.g. "failed"
+    workflow : str or None — exact workflow name (case-sensitive)
+    after    : str or None — ISO-8601 datetime; only runs started after this
+    before   : str or None — ISO-8601 datetime; only runs started before this
+    limit    : int — max rows to return (default 50)
+
+    Returns a list of dicts newest-first, same shape as list_runs().
+    """
+    clauses = []
+    params: list = []
+    if status is not None:
+        clauses.append("r.status = ?")
+        params.append(status)
+    if workflow is not None:
+        clauses.append("w.name = ?")
+        params.append(workflow)
+    if after is not None:
+        clauses.append("r.started_at > ?")
+        params.append(after)
+    if before is not None:
+        clauses.append("r.started_at < ?")
+        params.append(before)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    params.append(int(limit))
+    rows = conn.execute(
+        "SELECT r.id, w.name AS workflow, r.status, r.started_at, r.finished_at "
+        f"FROM run r JOIN workflow_def w ON r.workflow_def_id = w.id "
+        f"{where} ORDER BY r.id DESC LIMIT ?",
+        params,
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 def run_detail(conn, run_id):
     run = conn.execute(
@@ -470,9 +531,21 @@ def run_detail(conn, run_id):
         "SELECT id, ts, kind, payload_json FROM event_log WHERE run_id = ? ORDER BY id",
         (run_id,),
     ).fetchall()
+
+    def _parse_step(row):
+        d = dict(row)
+        # Parse output_json / error_json from raw JSON strings to Python
+        # objects so callers (UI, API consumers, tests) get structured data.
+        # Always pop both keys (even when NULL) so callers only see "output"/"error".
+        raw_out = d.pop("output_json", None)
+        raw_err = d.pop("error_json", None)
+        d["output"] = _db.from_json(raw_out) if raw_out else None
+        d["error"] = _db.from_json(raw_err) if raw_err else None
+        return d
+
     return {
         "run": dict(run),
-        "steps": [dict(s) for s in steps],
+        "steps": [_parse_step(s) for s in steps],
         "events": [dict(e) for e in events],
     }
 

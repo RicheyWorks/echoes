@@ -10,6 +10,51 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **`python` step type** — execute any callable in a dotted module path
+  (`module: my_package.tasks`, `function: process_data`). `print()` output
+  is captured and stored in the step's output as `stdout`; the function's
+  return value (JSON-serialised, or `repr()` for non-serialisable objects)
+  is stored as `return_value`. `stderr` is also captured when non-empty.
+- **Step output parsed in `run_detail()`** — `GET /api/run/<id>` now
+  returns each step's `output` and `error` as structured dicts instead of
+  raw JSON strings. Consumers no longer need to call `json.loads()`.
+- **Intelligent step output display in the web UI** — the run-detail page
+  now renders shell stdout/stderr as labelled blocks with exit-code badges,
+  HTTP responses with status-code badges and scrollable bodies, `python`
+  step return values and stdout, and `file_append` write/no-op indicators.
+- **Workflow YAML editor in the web UI** — `GET /workflows` lists every
+  registered workflow (name, version, timeout) as cards with a one-click
+  trigger button. A built-in editor lets you paste or hand-write a YAML
+  workflow spec and register it immediately via `POST /api/workflows`
+  without restarting the server.
+- **`engine.list_workflows(conn)`** — returns the latest version of every
+  named workflow definition with the spec parsed from JSON, used by the
+  new `/workflows` page.
+- **Workflow templates library** (`templates/`) — 10 curated starter YAMLs
+  across six categories (backup, health, dev, infra, media, agent,
+  personal). Each ships with a structured comment header (description,
+  required secrets/env, cron, last-verified date).
+- **`automaton init [NAME] [--template SLUG]`** — copies a template into
+  the current directory, prints required secrets and suggested cron, then
+  prompts the next step (`automaton register`). `--list` or omitting
+  `--template` prints all available templates.
+- **`templates/INDEX.md`** — auto-generated catalog of all templates with
+  one-line descriptions; verified fresh by a CI job on every PR.
+- **CI template validation** (`validate-templates` job) — every template
+  is run through `validate_spec` and INDEX.md staleness is checked on
+  every push.
+- **Run search and filter** — `engine.search_runs()` filters by status,
+  workflow name, and date range. The runs list page (`GET /`) now has a
+  filter bar (status dropdown, workflow name input, after/before date
+  pickers) that drives query-string-parameterised searches.
+- **Re-run button** — completed, failed, timed-out, and cancelled runs
+  show a ↺ Re-run button in the run-detail page. Clicking it POSTs to
+  `POST /api/trigger/<workflow>` with the original trigger payload and
+  redirects to the new run.
+- **`automaton inspect` filter flags** — `--status`, `--workflow`,
+  `--after`, `--before`, `--limit` narrow the CLI run listing via
+  `search_runs()`.
+
 - Docker deployment: multi-stage `Dockerfile` (builder + slim runtime),
   `docker-compose.yml` with worker / scheduler / ui services, health-check
   on `/healthz`, named volume for the SQLite file.
@@ -92,6 +137,30 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 - **Prune** — `automaton prune --before DAYS`.
 
 ### Changed
+- `automaton backup` now runs `PRAGMA integrity_check` and aborts on
+  corruption rather than silently copying a bad file.
+
+---
+
+## [0.1.0] — 2025-01-15
+
+### Added
+- Initial release.
+- SQLite state store with WAL mode, exactly-once step execution via
+  idempotency keys (`sha256(run_id + step_name + attempt)`).
+- Step types: `shell`, `http_get`, `file_append`, `python`.
+- Cron scheduler with single-leader election via DB row lock.
+- Worker with lease-based queue, crash recovery, configurable timeout.
+- `automaton` CLI: `register`, `trigger`, `worker`, `scheduler`, `serve`,
+  `inspect`, `schedule`, `backup`.
+- Web dashboard — runs list, run detail, workflows list, cron list.
+- Bearer token auth on write routes; `/healthz` open.
+- 68 tests.
+
+[Unreleased]: https://github.com/RicheyWorks/echoes/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/RicheyWorks/echoes/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/RicheyWorks/echoes/compare/v0.1.0...v0.2.0
+[0.1.0]: https://github.com/RicheyWorks/echoes/releases/tag/v0.1.0
 - `automaton backup` now runs `PRAGMA integrity_check` and aborts on
   corruption rather than silently copying a bad file.
 

@@ -93,12 +93,29 @@ def cmd_worker(args):
 def cmd_inspect(args):
     conn = _open()
     if args.run_id is None:
-        runs = engine.list_runs(conn)
+        # Use search_runs when any filter flag is set; otherwise list_runs.
+        filtering = any([
+            getattr(args, "status", None),
+            getattr(args, "workflow", None),
+            getattr(args, "after", None),
+            getattr(args, "before", None),
+        ])
+        if filtering:
+            runs = engine.search_runs(
+                conn,
+                status=getattr(args, "status", None) or None,
+                workflow=getattr(args, "workflow", None) or None,
+                after=getattr(args, "after", None) or None,
+                before=getattr(args, "before", None) or None,
+                limit=getattr(args, "limit", 50) or 50,
+            )
+        else:
+            runs = engine.list_runs(conn, limit=getattr(args, "limit", 20) or 20)
         if not runs:
             print("(no runs)")
             return 0
         for r in runs:
-            print(f"  run {r['id']:>4}  {r['workflow']:<20}  {r['status']:<10}  {r['started_at']}")
+            print(f"  run {r['id']:>4}  {r['workflow']:<20}  {r['status']:<12}  {r['started_at']}")
         return 0
     detail = engine.run_detail(conn, args.run_id)
     print(json.dumps(detail, indent=2, default=str))
@@ -597,6 +614,11 @@ def main(argv=None):
 
     p_ins = sub.add_parser("inspect", help="list runs or show one run")
     p_ins.add_argument("run_id", nargs="?", type=int)
+    p_ins.add_argument("--status", help="filter by status (e.g. failed, completed)")
+    p_ins.add_argument("--workflow", help="filter by workflow name (exact)")
+    p_ins.add_argument("--after", help="only runs started after this ISO-8601 datetime")
+    p_ins.add_argument("--before", help="only runs started before this ISO-8601 datetime")
+    p_ins.add_argument("--limit", type=int, default=50, help="max rows (default 50)")
     p_ins.set_defaults(func=cmd_inspect)
 
     p_sch = sub.add_parser("schedule", help="manage cron triggers")
