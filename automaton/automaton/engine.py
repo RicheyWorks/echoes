@@ -58,6 +58,19 @@ def validate_spec(spec: dict) -> None:
             raise ValueError(f"step {s['name']!r} missing 'type'")
         if "when" in s and not isinstance(s.get("when"), str):
             raise ValueError(f"step {s['name']!r}: 'when' must be a string")
+        env = s.get("env")
+        if env is not None:
+            if not isinstance(env, dict):
+                raise ValueError(f"step {s['name']!r}: 'env' must be a dict")
+            for k, v in env.items():
+                if not isinstance(k, str):
+                    raise ValueError(
+                        f"step {s['name']!r}: 'env' key {k!r} must be a string"
+                    )
+                if not isinstance(v, str):
+                    raise ValueError(
+                        f"step {s['name']!r}: 'env[{k}]' value {v!r} must be a string"
+                    )
         if s["name"] in names:
             raise ValueError(f"duplicate step name {s['name']!r}")
         names.add(s["name"])

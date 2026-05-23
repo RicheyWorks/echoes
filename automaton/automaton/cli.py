@@ -149,6 +149,31 @@ def cmd_run(args):
     return 0 if run_status == "completed" else 1
 
 
+def cmd_validate(args):
+    """Validate a workflow YAML without registering it."""
+    spec_path = Path(args.spec_file)
+    if not spec_path.exists():
+        print(f"error: file not found: {spec_path}", file=sys.stderr)
+        return 1
+    try:
+        spec = yaml.safe_load(spec_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        print(f"error: could not parse YAML: {e}", file=sys.stderr)
+        return 1
+    if not isinstance(spec, dict):
+        print("error: workflow spec must be a YAML mapping", file=sys.stderr)
+        return 1
+    try:
+        engine.validate_spec(spec)
+    except (ValueError, KeyError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    name = spec.get("name", "<unnamed>")
+    steps = spec.get("steps") or []
+    print(f"ok  {spec_path.name}  workflow={name!r}  steps={len(steps)}")
+    return 0
+
+
 def cmd_register(args):
     spec = yaml.safe_load(Path(args.spec_file).read_text(encoding="utf-8"))
     conn = _open()
@@ -879,6 +904,13 @@ def main(argv=None):
     p_init.add_argument("--list", action="store_true",
                           help="list available templates and exit")
     p_init.set_defaults(func=cmd_init)
+
+    p_val = sub.add_parser(
+        "validate",
+        help="validate a workflow YAML file without registering it",
+    )
+    p_val.add_argument("spec_file", help="path to workflow YAML file")
+    p_val.set_defaults(func=cmd_validate)
 
     p_run = sub.add_parser(
         "run",

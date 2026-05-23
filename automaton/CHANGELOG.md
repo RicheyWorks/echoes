@@ -185,3 +185,12 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
   cryptic mid-run template errors. Empty lists and absent `inputs:` fields
   are treated as no requirements. `automaton run` surfaces missing-input
   errors and exits 1.
+- **`env:` dict on shell steps validated** — `validate_spec` now enforces
+  that `env:` is a string-keyed, string-valued dict. Template references
+  (`${{ run.payload.key }}`, `${{ secret:NAME }}`) are accepted as values
+  and are resolved before the subprocess launches.
+- **`automaton validate <spec.yaml>`** — validates a workflow YAML file
+  without registering it: parses YAML, runs `validate_spec` (name, steps,
+  needs, cycles, `when:`, `env:`, `inputs:`), prints a one-line summary on
+  success, and exits 0 (valid) or 1 (invalid). Designed for pre-commit hooks
+  and CI lint jobs.
