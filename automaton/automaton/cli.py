@@ -123,7 +123,11 @@ def cmd_run(args):
             print(f"error: --payload is not valid JSON: {e}", file=sys.stderr)
             return 1
 
-    run_id = engine.trigger_run(conn, spec["name"], "cli-run", payload)
+    try:
+        run_id = engine.trigger_run(conn, spec["name"], "cli-run", payload)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
     print(f"automaton run  workflow={spec['name']!r}  run_id={run_id}")
     print()
 

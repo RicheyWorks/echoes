@@ -97,6 +97,17 @@ def validate_spec(spec: dict) -> None:
         except ValueError as e:
             raise ValueError(f"workflow timezone: {e}") from e
 
+    # Required trigger-payload inputs.
+    inputs = spec.get("inputs")
+    if inputs is not None:
+        if not isinstance(inputs, list):
+            raise ValueError("workflow 'inputs' must be a list of strings")
+        for i, item in enumerate(inputs):
+            if not isinstance(item, str) or not item.strip():
+                raise ValueError(
+                    f"workflow 'inputs[{i}]' must be a non-empty string, got {item!r}"
+                )
+
 
 def register_workflow(conn: sqlite3.Connection, spec: dict) -> int:
     validate_spec(spec)
@@ -136,13 +147,25 @@ def trigger_run(conn, workflow_name, trigger_kind="manual", trigger_payload=None
 def _trigger_run_locked(conn, workflow_name, trigger_kind, trigger_payload):
     """Same as trigger_run but assumes the caller holds an open transaction."""
     wf = _latest_workflow(conn, workflow_name)
+    spec = _db.from_json(wf["spec_json"])
+
+    # Validate required inputs before creating the run.
+    required = spec.get("inputs") or []
+    if required:
+        payload_keys = set((trigger_payload or {}).keys())
+        missing = [k for k in required if k not in payload_keys]
+        if missing:
+            raise ValueError(
+                f"workflow {workflow_name!r} requires inputs that are missing "
+                f"from the trigger payload: {', '.join(missing)}"
+            )
+
     cur = conn.execute(
         "INSERT INTO run (workflow_def_id, status, trigger_kind, trigger_payload) "
         "VALUES (?, 'running', ?, ?)",
         (wf["id"], trigger_kind, _db.to_json(trigger_payload)),
     )
     run_id = cur.lastrowid
-    spec = _db.from_json(wf["spec_json"])
     _seed_runnable_steps(conn, run_id, spec)
     _log_event(conn, run_id, "run.started",
                {"workflow": workflow_name, "version": wf["version"]})

@@ -179,3 +179,9 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
   cancelled). Accepts `--payload JSON` and `--timeout N` (seconds; 0 = no
   limit). Designed for use in shell scripts and CI pipelines without a
   running server.
+- **Workflow required inputs (`inputs:` field)** — declare required
+  trigger-payload keys in the spec. `trigger_run` raises `ValueError` with
+  a clear message listing missing keys before creating the run, preventing
+  cryptic mid-run template errors. Empty lists and absent `inputs:` fields
+  are treated as no requirements. `automaton run` surfaces missing-input
+  errors and exits 1.
