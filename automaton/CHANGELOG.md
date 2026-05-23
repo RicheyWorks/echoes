@@ -166,3 +166,10 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 [0.3.0]: https://github.com/RicheyWorks/echoes/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/RicheyWorks/echoes/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/RicheyWorks/echoes/releases/tag/v0.1.0
+- **`when:` conditional step execution** — any step can carry a `when:` field
+  (a string, optionally templated). The condition is evaluated after all
+  `needs` complete: if falsy (`"false"`, `"0"`, `""`, `"no"`, `"off"`, or a
+  resolved value of `0`/`None`/`False`) the step is marked `skipped` and
+  downstream steps are still queued. Skipped steps do not fail the run.
+  Supports `${{ steps.<name>.output.<key> }}` and `${{ steps.<name>.status }}`
+  references so conditional logic is driven by real upstream results.

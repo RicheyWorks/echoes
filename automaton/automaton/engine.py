@@ -56,6 +56,8 @@ def validate_spec(spec: dict) -> None:
             raise ValueError(f"step #{i} missing 'name'")
         if "type" not in s or not isinstance(s["type"], str):
             raise ValueError(f"step {s['name']!r} missing 'type'")
+        if "when" in s and not isinstance(s.get("when"), str):
+            raise ValueError(f"step {s['name']!r}: 'when' must be a string")
         if s["name"] in names:
             raise ValueError(f"duplicate step name {s['name']!r}")
         names.add(s["name"])
@@ -222,6 +224,25 @@ def lease_one(conn, worker_id, lease_seconds):
         return step_id
 
 
+def _is_truthy(value) -> bool:
+    """Evaluate a resolved when: value as a boolean.
+
+    Booleans and ints use Python truthiness directly. Strings treat the
+    canonical false words ("false", "no", "off", "0", "") as False and
+    everything else as True. None is False.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() not in ("", "false", "no", "off", "0")
+    # lists, dicts: non-empty is truthy
+    return bool(value)
+
+
 def execute_and_commit(conn, step_id, worker_id, crash_after=None):
     step_row = conn.execute("SELECT * FROM step WHERE id = ?", (step_id,)).fetchone()
     raw_spec = _db.from_json(step_row["input_json"])
@@ -234,6 +255,15 @@ def execute_and_commit(conn, step_id, worker_id, crash_after=None):
         commit_step(conn, step_id, "failed", None,
                     {"type": "TemplateError", "message": str(e)})
         return
+
+    # Evaluate optional when: condition.  A falsy resolved value skips the
+    # step without failing the run; downstream successors are still queued.
+    when_val = spec.get("when")
+    if when_val is not None:
+        if not _is_truthy(when_val):
+            commit_step(conn, step_id, "skipped", None, None)
+            return
+
     ctx = StepContext(
         run_id=step_row["run_id"],
         step_name=step_row["name"],
@@ -362,7 +392,7 @@ def commit_step(conn, step_id, status, output, error, secret_values=None):
         log.info("step %s id=%s name=%s run=%s",
                  status, step_id, step_row["name"], run_id)
 
-        if status == "completed":
+        if status in ("completed", "skipped"):
             _enqueue_newly_ready_successors(conn, run_id, step_row["name"])
         elif status == "failed":
             _maybe_schedule_retry(conn, step_row)
@@ -404,7 +434,8 @@ def _enqueue_newly_ready_successors(conn, run_id, just_completed):
     completed_names = {
         r["name"]
         for r in conn.execute(
-            "SELECT name FROM step WHERE run_id = ? AND status = 'completed'", (run_id,)
+            "SELECT name FROM step WHERE run_id = ? AND status IN ('completed', 'skipped')",
+            (run_id,),
         )
     }
 

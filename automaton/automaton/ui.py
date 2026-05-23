@@ -56,6 +56,7 @@ _STATUS_TEXT = {
     "running":   "text-amber-600 animate-pulse",
     "pending":   "text-slate-500",
     "cancelled": "text-slate-400 line-through",
+    "skipped":   "text-slate-400 italic",
 }
 
 
