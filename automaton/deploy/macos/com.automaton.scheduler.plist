@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.automaton.scheduler</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>@PREFIX@/bin/automaton</string>
+    <string>scheduler</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>@HOME@/Library/Application Support/automaton</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AUTOMATON_DB</key>
+    <string>@HOME@/Library/Application Support/automaton/automaton.db</string>
+    <key>AUTOMATON_LOG_FILE</key>
+    <string>@HOME@/Library/Logs/automaton/automaton.log</string>
+    <key>AUTOMATON_LOG_LEVEL</key>
+    <string>INFO</string>
+    <key>AUTOMATON_LOG_FORMAT</key>
+    <string>json</string>
+    <key>PATH</key>
+    <string>@PREFIX@/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>@HOME@/Library/Logs/automaton/scheduler.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>@HOME@/Library/Logs/automaton/scheduler.err.log</string>
+</dict>
+</plist>

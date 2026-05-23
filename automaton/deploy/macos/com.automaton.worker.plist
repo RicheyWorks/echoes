@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.automaton.worker</string>
+
+  <!-- The install script substitutes @PREFIX@ for the user's $HOME so
+       this file works whether installed via Homebrew or install.sh. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>@PREFIX@/bin/automaton</string>
+    <string>worker</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>@HOME@/Library/Application Support/automaton</string>
+
+  <!-- launchd doesn't honor EnvironmentFile the way systemd does;
+       install.sh translates the env file into these entries at install
+       time. Edit @HOME@/Library/Application Support/automaton/automaton.env
+       and re-run install.sh to refresh. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AUTOMATON_DB</key>
+    <string>@HOME@/Library/Application Support/automaton/automaton.db</string>
+    <key>AUTOMATON_LOG_FILE</key>
+    <string>@HOME@/Library/Logs/automaton/automaton.log</string>
+    <key>AUTOMATON_LOG_LEVEL</key>
+    <string>INFO</string>
+    <key>AUTOMATON_LOG_FORMAT</key>
+    <string>json</string>
+    <key>PATH</key>
+    <string>@PREFIX@/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <!-- KeepAlive + RunAtLoad together mean "restart if it crashes and
+       start automatically on user login". -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <!-- Throttle restarts so a step-author bug doesn't spin the CPU. -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>@HOME@/Library/Logs/automaton/worker.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>@HOME@/Library/Logs/automaton/worker.err.log</string>
+</dict>
+</plist>

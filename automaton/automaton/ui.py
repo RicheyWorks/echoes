@@ -1,0 +1,737 @@
+"""Inspection UI + JSON API over the automaton state store.
+
+Read routes (no auth required when bound to localhost):
+  GET  /                      list recent runs (HTML)
+  GET  /run/<id>              one run (HTML)
+  GET  /crons                 cron triggers (HTML)
+  GET  /api/runs              list runs
+  GET  /api/run/<id>          run detail
+  GET  /api/crons             cron triggers
+  GET  /api/step_types        list registered step types (built-in + plugins)
+
+Write routes (require Authorization: Bearer <TOKEN> when AUTOMATON_TOKEN is set):
+  POST /api/workflows         body: workflow YAML/JSON spec  -> {workflow_def_id}
+  POST /api/trigger/<name>    body: optional {"payload": ...} -> {run_id}
+  POST /api/crons             body: {"workflow_name", "cron_expr"} -> {trigger_id}
+
+Auth model: a single shared bearer token in env var AUTOMATON_TOKEN.
+If unset, write routes return 403 unless --insecure-no-auth is passed.
+Read routes are always open (the rationale is that the UI binds to 127.0.0.1
+by default; if you expose the UI, you should also set a token).
+"""
+from __future__ import annotations
+
+import html
+import json
+import logging
+import os
+import re
+import sqlite3
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import Optional
+
+import yaml
+
+from . import db as _db
+from . import engine
+from . import metrics as _metrics
+from . import scheduler as _scheduler
+from . import steps as _steps
+from . import webhooks as _webhooks
+
+log = logging.getLogger("automaton.ui")
+
+
+# ----- HTML rendering -----
+
+# Tailwind via CDN: no build step, semantic markup, responsive
+# breakpoints. Combined with the PWA manifest below, the UI installs to
+# home screen on iOS Safari and Android Chrome with a working app icon.
+TAILWIND_CDN = "https://cdn.tailwindcss.com"
+
+# Status color map - used by both the table and the card layouts.
+_STATUS_TEXT = {
+    "completed": "text-emerald-600",
+    "failed":    "text-rose-600",
+    "running":   "text-amber-600 animate-pulse",
+    "pending":   "text-slate-500",
+    "cancelled": "text-slate-400 line-through",
+}
+
+
+def _status_pill(status: str) -> str:
+    """Inline span used both in tables and cards."""
+    cls = _STATUS_TEXT.get(status or "", "text-slate-500")
+    return f'<span class="font-medium {cls}">{html.escape(status or "-")}</span>'
+
+
+def _page(title, body, auto_refresh=None, extra_head=""):
+    """Wrap body in a tailwind + PWA shell.
+
+    auto_refresh kept for backward compat but we prefer live updates via
+    EventSource where possible (see render_run_detail).
+    """
+    refresh = (f'<meta http-equiv="refresh" content="{auto_refresh}">'
+               if auto_refresh else "")
+    return f"""<!DOCTYPE html>
+<html lang="en"><head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <title>{html.escape(title)}</title>
+  <link rel="manifest" href="/manifest.json">
+  {refresh}
+  <script src="{TAILWIND_CDN}"></script>
+  {extra_head}
+  <script>
+    if ("serviceWorker" in navigator) {{
+      navigator.serviceWorker.register("/sw.js").catch(() => {{}});
+    }}
+  </script>
+  {_TS_JS}
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+  <div class="max-w-4xl mx-auto px-4 py-4 sm:py-6">
+    <nav class="flex items-center gap-4 mb-6 text-sm">
+      <a href="/" class="font-semibold text-slate-900 hover:text-blue-700">Runs</a>
+      <a href="/crons" class="text-slate-600 hover:text-blue-700">Cron triggers</a>
+      <span class="ml-auto text-xs text-slate-400">automaton</span>
+    </nav>
+    {body}
+  </div>
+</body></html>"""
+
+
+def _status_cell(status):
+    s = html.escape(status or "")
+    return f'<td class="status-{s}">{s}</td>'
+
+
+_TS_JS = """<script>
+document.addEventListener('DOMContentLoaded', function() {
+  document.querySelectorAll('time.utc-ts').forEach(function(el) {
+    var iso = el.getAttribute('datetime');
+    if (!iso) return;
+    try {
+      var d = new Date(iso);
+      if (isNaN(d.getTime())) return;
+      var local = d.toLocaleString();
+      var utc = el.textContent.trim();
+      el.textContent = local + ' (​' + utc + ' UTC)';
+    } catch(e) {}
+  });
+});
+</script>"""
+
+
+def _ts(val) -> str:
+    """Render a UTC timestamp as a <time> element browsers can localise.
+
+    The JS in _TS_JS finds .utc-ts elements on DOMContentLoaded and rewrites
+    them to show browser-local time with the raw UTC value in parens. SQLite
+    stores timestamps as "YYYY-MM-DD HH:MM:SS[.mmm]"; we normalise to ISO 8601
+    with a Z suffix so ``new Date()`` parses them correctly.
+    """
+    if not val:
+        return "-"
+    s = str(val)
+    iso = s.replace(" ", "T", 1)
+    if "." in iso:
+        iso = iso[:iso.index(".")]
+    if not iso.endswith("Z"):
+        iso += "Z"
+    return f'<time class="utc-ts" datetime="{html.escape(iso)}">{html.escape(s)}</time>'
+
+
+def render_run_list(conn):
+    runs = engine.list_runs(conn, limit=50)
+    if not runs:
+        body = ('<h1 class="text-xl font-semibold mb-4">Runs</h1>'
+                '<p class="text-slate-500">No runs yet.</p>')
+        return _page("automaton - runs", body, auto_refresh=5)
+
+    # Desktop: table. Mobile: card list. Same data twice, with the
+    # complementary visibility classes; cheap enough not to bother with
+    # a JS renderer.
+    table_rows = []
+    cards = []
+    for r in runs:
+        rid = r["id"]
+        wf = html.escape(r["workflow"])
+        started = html.escape(str(r["started_at"] or ""))
+        finished = html.escape(str(r["finished_at"] or "-"))
+        status = r["status"]
+        table_rows.append(
+            f'<tr class="border-b border-slate-200 hover:bg-slate-50">'
+            f'<td class="py-2 px-3"><a class="text-blue-700 hover:underline" href="/run/{rid}">{rid}</a></td>'
+            f'<td class="py-2 px-3">{wf}</td>'
+            f'<td class="py-2 px-3">{_status_pill(status)}</td>'
+            f'<td class="py-2 px-3 text-xs text-slate-500">{started}</td>'
+            f'<td class="py-2 px-3 text-xs text-slate-500">{finished}</td>'
+            '</tr>'
+        )
+        cards.append(
+            f'<a href="/run/{rid}" class="block bg-white border border-slate-200 rounded-lg p-3 hover:border-blue-400">'
+            f'<div class="flex items-baseline justify-between">'
+            f'<span class="font-semibold text-slate-900">#{rid} <span class="text-slate-500">{wf}</span></span>'
+            f'{_status_pill(status)}</div>'
+            f'<div class="text-xs text-slate-500 mt-1">{started}</div>'
+            '</a>'
+        )
+
+    body = (
+        '<h1 class="text-xl font-semibold mb-4">Runs</h1>'
+        # Mobile-only cards (block on <sm, hidden ≥sm).
+        '<div class="flex flex-col gap-2 sm:hidden">' + "".join(cards) + '</div>'
+        # Desktop-only table.
+        '<div class="hidden sm:block overflow-x-auto">'
+        '<table class="w-full text-sm bg-white border border-slate-200 rounded-lg overflow-hidden">'
+        '<thead class="bg-slate-100 text-slate-600 text-xs uppercase">'
+        '<tr><th class="text-left py-2 px-3">#</th><th class="text-left py-2 px-3">Workflow</th>'
+        '<th class="text-left py-2 px-3">Status</th>'
+        '<th class="text-left py-2 px-3">Started</th>'
+        '<th class="text-left py-2 px-3">Finished</th></tr></thead>'
+        f'<tbody>{"".join(table_rows)}</tbody></table></div>'
+        '<p class="text-xs text-slate-400 mt-4">Auto-refreshes every 5 seconds.</p>'
+    )
+    return _page("automaton - runs", body, auto_refresh=5)
+
+
+def render_run_detail(conn, run_id):
+    try:
+        d = engine.run_detail(conn, run_id)
+    except KeyError:
+        body = f'<h1 class="text-xl font-semibold">No run {run_id}</h1>'
+        return _page("not found", body), 404
+    run = d["run"]
+
+    step_rows = []
+    for s in d["steps"]:
+        out = s.get("output_json")
+        err = s.get("error_json")
+        body_pre = ""
+        if out:
+            body_pre += ('<pre class="text-xs bg-slate-50 p-2 rounded overflow-x-auto">'
+                         f'{html.escape(out)}</pre>')
+        if err:
+            body_pre += ('<pre class="text-xs bg-rose-50 text-rose-700 p-2 rounded overflow-x-auto mt-1">'
+                         f'{html.escape(err)}</pre>')
+        step_rows.append(
+            '<div class="bg-white border border-slate-200 rounded-lg p-3">'
+            '<div class="flex items-baseline justify-between gap-2">'
+            f'<span class="font-semibold">{html.escape(s["name"])} '
+            f'<span class="text-xs text-slate-500 font-normal">attempt {s["attempt"]}</span></span>'
+            f'{_status_pill(s["status"])}</div>'
+            f'<div class="text-xs text-slate-500 mt-1">{_ts(s["started_at"])} → {_ts(s["finished_at"])}</div>'
+            f'{body_pre}'
+            '</div>'
+        )
+
+    event_rows = []
+    for e in d["events"]:
+        event_rows.append(
+            '<tr class="border-b border-slate-100">'
+            f'<td class="py-1 px-2 text-xs text-slate-400">{e["id"]}</td>'
+            f'<td class="py-1 px-2 text-xs text-slate-500 whitespace-nowrap">{_ts(e["ts"])}</td>'
+            f'<td class="py-1 px-2 text-xs font-medium">{html.escape(e["kind"])}</td>'
+            f'<td class="py-1 px-2 text-xs"><code class="text-xs">{html.escape(e.get("payload_json") or "")}</code></td>'
+            '</tr>'
+        )
+
+    # Inline EventSource: live-update the status pill while pending or
+    # running; close the connection once we reach a terminal state.
+    live_js = ""
+    if run["status"] in ("running", "pending"):
+        live_js = f"""<script>
+(function() {{
+  var es = new EventSource("/api/run/{run["id"]}/events");
+  var pill = document.getElementById("run-status");
+  es.onmessage = function(ev) {{
+    try {{
+      var data = JSON.parse(ev.data);
+      if (data.status && pill) {{ pill.textContent = data.status; }}
+      if (data.status && ["completed","failed","cancelled"].indexOf(data.status) >= 0) {{
+        es.close();
+        // Reload once so steps + events refresh; future improvement
+        // would diff in-place but a one-shot reload is fine here.
+        setTimeout(function() {{ window.location.reload(); }}, 250);
+      }}
+    }} catch (e) {{ /* ignore */ }}
+  }};
+  es.onerror = function() {{ es.close(); }};
+}})();
+</script>"""
+
+    body = (
+        f'<div class="flex items-baseline justify-between gap-4 flex-wrap mb-4">'
+        f'<h1 class="text-xl font-semibold">Run {run["id"]}'
+        f' <span class="text-base text-slate-500 font-normal">{html.escape(run["workflow"])} v{run["version"]}</span></h1>'
+        f'<div>Status: <strong id="run-status" class="{_STATUS_TEXT.get(run["status"], "")}">{run["status"]}</strong></div>'
+        '</div>'
+
+        '<h2 class="text-sm uppercase tracking-wide text-slate-500 mb-2">Steps</h2>'
+        '<div class="flex flex-col gap-2 mb-6">' + "".join(step_rows) + '</div>'
+
+        '<h2 class="text-sm uppercase tracking-wide text-slate-500 mb-2">Event log</h2>'
+        '<div class="overflow-x-auto bg-white border border-slate-200 rounded-lg">'
+        '<table class="w-full text-sm">'
+        '<thead class="bg-slate-100 text-xs text-slate-600 uppercase">'
+        '<tr><th class="text-left py-1 px-2">#</th><th class="text-left py-1 px-2">Time</th>'
+        '<th class="text-left py-1 px-2">Kind</th><th class="text-left py-1 px-2">Payload</th></tr>'
+        '</thead><tbody>' + "".join(event_rows) + '</tbody></table></div>'
+
+        + live_js
+    )
+    return _page(f"run {run_id}", body), 200
+
+
+def render_crons(conn):
+    rows = _scheduler.list_crons(conn)
+    if not rows:
+        body = ('<h1 class="text-xl font-semibold mb-4">Cron triggers</h1>'
+                '<p class="text-slate-500">None registered.</p>')
+        return _page("automaton - crons", body)
+
+    cards = []
+    table_rows = []
+    for r in rows:
+        enabled = r["enabled"]
+        on_pill = ('<span class="text-emerald-600 text-xs font-medium">on</span>'
+                   if enabled else
+                   '<span class="text-slate-400 text-xs">off</span>')
+        tz = html.escape(r.get("timezone") or "UTC")
+        expr = html.escape(r["cron_expr"])
+        wf = html.escape(r["workflow_name"])
+        cards.append(
+            '<div class="bg-white border border-slate-200 rounded-lg p-3">'
+            f'<div class="flex items-baseline justify-between"><span class="font-semibold">#{r["id"]} {wf}</span>{on_pill}</div>'
+            f'<code class="text-xs bg-slate-50 px-1 rounded">{expr}</code> <span class="text-xs text-slate-500">tz={tz}</span>'
+            f'<div class="text-xs text-slate-500 mt-1">next: {_ts(r["next_fire_at"])}</div>'
+            f'<div class="text-xs text-slate-500">last: {_ts(r.get("last_fire_at"))}</div>'
+            '</div>'
+        )
+        table_rows.append(
+            f'<tr class="border-b border-slate-200"><td class="py-2 px-3">{r["id"]}</td>'
+            f'<td class="py-2 px-3">{wf}</td>'
+            f'<td class="py-2 px-3"><code class="text-xs bg-slate-50 px-1 rounded">{expr}</code></td>'
+            f'<td class="py-2 px-3 text-xs">{tz}</td>'
+            f'<td class="py-2 px-3 text-xs text-slate-500">{_ts(r["next_fire_at"])}</td>'
+            f'<td class="py-2 px-3 text-xs text-slate-500">{_ts(r.get("last_fire_at"))}</td>'
+            f'<td class="py-2 px-3">{on_pill}</td></tr>'
+        )
+
+    body = (
+        '<h1 class="text-xl font-semibold mb-4">Cron triggers</h1>'
+        '<div class="flex flex-col gap-2 sm:hidden">' + "".join(cards) + '</div>'
+        '<div class="hidden sm:block overflow-x-auto">'
+        '<table class="w-full text-sm bg-white border border-slate-200 rounded-lg overflow-hidden">'
+        '<thead class="bg-slate-100 text-slate-600 text-xs uppercase">'
+        '<tr><th class="text-left py-2 px-3">#</th><th class="text-left py-2 px-3">Workflow</th>'
+        '<th class="text-left py-2 px-3">Expression</th><th class="text-left py-2 px-3">TZ</th>'
+        '<th class="text-left py-2 px-3">Next fire</th><th class="text-left py-2 px-3">Last fire</th>'
+        '<th class="text-left py-2 px-3">On</th></tr></thead>'
+        f'<tbody>{"".join(table_rows)}</tbody></table></div>'
+    )
+    return _page("automaton - crons", body, auto_refresh=5)
+
+
+# ----- PWA: manifest + minimal service worker -----
+
+def render_manifest_json() -> str:
+    """Minimal Web App Manifest. Lets iOS Safari / Android Chrome
+    install the UI to home screen with a meaningful icon + title."""
+    return json.dumps({
+        "name": "automaton",
+        "short_name": "automaton",
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "background_color": "#0f172a",
+        "theme_color": "#0f172a",
+        "icons": [
+            # Inline SVG icon; browsers accept it as an app icon and we
+            # avoid shipping a binary asset.
+            {
+                "src": "data:image/svg+xml;utf8,"
+                       "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
+                       "<rect width='64' height='64' rx='12' fill='%230f172a'/>"
+                       "<text x='32' y='42' text-anchor='middle' font-family='monospace' "
+                       "font-size='28' fill='%2360a5fa'>a</text></svg>",
+                "sizes": "any", "type": "image/svg+xml",
+            }
+        ],
+    })
+
+
+def render_service_worker() -> str:
+    """One-page service worker: caches the runs list so the home
+    screen icon opens to something even when offline. Deliberately
+    tiny - if anything goes wrong, the page still works without us."""
+    return """
+const CACHE = "automaton-v1";
+const SHELL = ["/"];
+self.addEventListener("install", (e) => {
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));
+});
+self.addEventListener("fetch", (e) => {
+  const u = new URL(e.request.url);
+  // Network-first for everything except the runs list, which we serve
+  // from cache as a fallback so the app icon opens even offline.
+  if (u.pathname === "/") {
+    e.respondWith(
+      fetch(e.request)
+        .then((r) => { caches.open(CACHE).then((c) => c.put(e.request, r.clone())); return r; })
+        .catch(() => caches.match(e.request))
+    );
+  }
+});
+""".lstrip()
+
+
+_RUN_RE = re.compile(r"^/run/(\d+)/?$")
+_API_RUN_RE = re.compile(r"^/api/run/(\d+)/?$")
+_API_RUN_EVENTS_RE = re.compile(r"^/api/run/(\d+)/events/?$")
+_API_CANCEL_RE = re.compile(r"^/api/run/(\d+)/cancel/?$")
+_API_TRIGGER_RE = re.compile(r"^/api/trigger/([A-Za-z0-9_.-]+)/?$")
+_API_SIGNAL_RE = re.compile(r"^/api/signals/(\d+)/([A-Za-z0-9_.-]+)/?$")
+_WEBHOOK_RE = re.compile(r"^/webhook/([A-Za-z0-9_.-]+)/?$")
+
+
+def make_handler(db_path: str, auth_token: Optional[str], require_auth: bool,
+                 tls_enabled: bool = False):
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            log.info("%s %s", self.command, self.path)
+
+        # --- helpers ---
+        def _send(self, status, body, content_type="text/html; charset=utf-8"):
+            data = body.encode("utf-8") if isinstance(body, str) else body
+            self.send_response(status)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            if tls_enabled:
+                # 180 days. Conservative for personal infra - browsers cache
+                # this aggressively. includeSubDomains intentionally omitted.
+                self.send_header(
+                    "Strict-Transport-Security", "max-age=15552000"
+                )
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _json(self, status, obj):
+            self._send(status, json.dumps(obj, default=str), "application/json")
+
+        def _read_body(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            return self.rfile.read(length) if length else b""
+
+        def _check_auth(self) -> bool:
+            if not require_auth:
+                return True
+            got = self.headers.get("Authorization", "")
+            expected = f"Bearer {auth_token}"
+            if bool(auth_token) and got == expected:
+                return True
+            # GET-only fallback: ?token=... in the query string. Lets a
+            # browser bookmark work; logs a startup warning that this
+            # leaks the token into web server logs (see serve()).
+            if self.command == "GET" and auth_token:
+                from urllib.parse import urlparse, parse_qs
+                qs = parse_qs(urlparse(self.path).query)
+                token_q = (qs.get("token") or [""])[0]
+                if token_q == auth_token:
+                    return True
+            return False
+
+        # --- routing ---
+        def _handle_webhook(self, name):
+            body_bytes = self._read_body()
+            conn = _db.connect(db_path)
+            try:
+                endpoint = _webhooks.get_endpoint(conn, name)
+                if endpoint is None:
+                    self._json(404, {"error": f"no webhook endpoint {name!r}"})
+                    return
+                header_value = self.headers.get(endpoint["signature_header"]) or ""
+                try:
+                    _webhooks.verify_signature(endpoint, body_bytes, header_value)
+                except _webhooks.WebhookError as e:
+                    self._json(e.status_code, {"error": str(e)})
+                    return
+                # Parse the body as JSON (best effort) so the workflow sees structured data.
+                payload = None
+                if body_bytes:
+                    try:
+                        payload = json.loads(body_bytes.decode("utf-8"))
+                    except Exception:
+                        payload = {"raw_body": body_bytes.decode("utf-8", errors="replace")}
+                try:
+                    run_id = engine.trigger_run(
+                        conn, endpoint["workflow_name"],
+                        trigger_kind="webhook",
+                        trigger_payload={"endpoint": name, "body": payload},
+                    )
+                except KeyError:
+                    self._json(500, {"error":
+                        f"webhook endpoint {name!r} points to unknown workflow "
+                        f"{endpoint['workflow_name']!r}"})
+                    return
+                self._json(202, {"run_id": run_id, "endpoint": name})
+            finally:
+                conn.close()
+
+        def do_GET(self):
+            path = self.path.split("?", 1)[0]
+            conn = _db.connect(db_path)
+            try:
+                if path in ("/", "/runs", "/runs/"):
+                    self._send(200, render_run_list(conn)); return
+                m = _RUN_RE.match(path)
+                if m:
+                    body, st = render_run_detail(conn, int(m.group(1)))
+                    self._send(st, body); return
+                if path in ("/crons", "/crons/"):
+                    self._send(200, render_crons(conn)); return
+                if path == "/api/runs":
+                    self._json(200, engine.list_runs(conn)); return
+                m = _API_RUN_RE.match(path)
+                if m:
+                    try:
+                        self._json(200, engine.run_detail(conn, int(m.group(1))))
+                    except KeyError:
+                        self._json(404, {"error": "not found"})
+                    return
+                m = _API_SIGNAL_RE.match(path)
+                if m:
+                    rid, sname = int(m.group(1)), m.group(2)
+                    payload = (body or {}).get("payload") if isinstance(body, dict) else None
+                    try:
+                        sid = engine.send_signal(conn, rid, sname, payload)
+                    except sqlite3.IntegrityError:
+                        self._json(404, {"error": f"no run {rid}"})
+                        return
+                    self._json(201, {"signal_id": sid})
+                    return
+                if path == "/api/crons":
+                    self._json(200, _scheduler.list_crons(conn)); return
+                if path == "/api/signals":
+                    rows = conn.execute(
+                        "SELECT id, run_id, name, payload_json, sent_at, consumed_at "
+                        "FROM signal ORDER BY id DESC LIMIT 50"
+                    ).fetchall()
+                    self._json(200, [dict(r) for r in rows]); return
+                if path == "/api/webhooks":
+                    self._json(200, _webhooks.list_webhooks(conn)); return
+                if path == "/api/step_types":
+                    self._json(200, {"types": _steps.registered_types()}); return
+                if path in ("/healthz", "/health"):
+                    self._json(200, {"ok": True}); return
+                if path == "/metrics":
+                    payload = _metrics.collect(conn, db_path)
+                    self._send(200, payload,
+                               content_type=_metrics.CONTENT_TYPE)
+                    return
+                if path == "/manifest.json":
+                    self._send(200, render_manifest_json(),
+                               content_type="application/manifest+json")
+                    return
+                if path == "/sw.js":
+                    self._send(200, render_service_worker(),
+                               content_type="application/javascript")
+                    return
+                m = _API_RUN_EVENTS_RE.match(path)
+                if m:
+                    self._stream_run_events(int(m.group(1)))
+                    return
+                self._send(404, _page("not found", '<h1 class="text-xl font-semibold">404</h1>'))
+            finally:
+                conn.close()
+
+        def _stream_run_events(self, run_id: int):
+            """Server-Sent Events stream of run status changes.
+
+            Holds the response open for up to 60 seconds, polling the
+            DB every 500 ms; emits a frame whenever the run's status
+            string changes (or, every 10s, a heartbeat to keep proxies
+            from cutting the idle connection). Closes itself on
+            terminal status so the browser doesn't reconnect needlessly.
+
+            Python's stdlib http.server is one-thread-per-request via
+            BaseHTTPServer, which is fine for a personal-infra UI but
+            don't put many tabs on a single connection.
+            """
+            import time
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            if tls_enabled:
+                self.send_header("Strict-Transport-Security",
+                                 "max-age=15552000")
+            self.end_headers()
+
+            stream_conn = _db.connect(db_path)
+            try:
+                last_status = None
+                start = time.monotonic()
+                last_heartbeat = start
+                while time.monotonic() - start < 60:
+                    row = stream_conn.execute(
+                        "SELECT status FROM run WHERE id = ?", (run_id,)
+                    ).fetchone()
+                    if row is None:
+                        # Unknown run id; emit a one-shot frame and bail.
+                        self.wfile.write(b'data: {"error": "not found"}\n\n')
+                        self.wfile.flush()
+                        return
+                    status = row["status"]
+                    if status != last_status:
+                        payload = json.dumps({"status": status,
+                                               "run_id": run_id})
+                        self.wfile.write(
+                            f"data: {payload}\n\n".encode("utf-8")
+                        )
+                        self.wfile.flush()
+                        last_status = status
+                        last_heartbeat = time.monotonic()
+                        if status in ("completed", "failed", "cancelled"):
+                            return
+                    elif time.monotonic() - last_heartbeat > 10:
+                        # SSE heartbeat comment - ignored by EventSource
+                        # but keeps any proxy in the middle from
+                        # treating the connection as idle and closing it.
+                        self.wfile.write(b": heartbeat\n\n")
+                        self.wfile.flush()
+                        last_heartbeat = time.monotonic()
+                    time.sleep(0.5)
+            except (BrokenPipeError, ConnectionResetError):
+                # Client navigated away or closed the page.
+                pass
+            finally:
+                stream_conn.close()
+
+
+        def do_POST(self):
+            path = self.path.split("?", 1)[0]
+            # Webhook routes have their own per-endpoint signature auth.
+            m = _WEBHOOK_RE.match(path)
+            if m:
+                self._handle_webhook(m.group(1))
+                return
+            if not self._check_auth():
+                self._json(401, {"error": "unauthorized"})
+                return
+            path = self.path.split("?", 1)[0]
+            try:
+                body_bytes = self._read_body()
+                body = yaml.safe_load(body_bytes.decode("utf-8")) if body_bytes else None
+            except Exception as e:
+                self._json(400, {"error": f"invalid body: {e}"})
+                return
+
+            conn = _db.connect(db_path)
+            try:
+                if path == "/api/workflows":
+                    if not isinstance(body, dict) or "name" not in body or "steps" not in body:
+                        self._json(400, {"error": "body must be a workflow spec with 'name' and 'steps'"})
+                        return
+                    wid = engine.register_workflow(conn, body)
+                    self._json(201, {"workflow_def_id": wid, "name": body["name"]})
+                    return
+                m = _API_CANCEL_RE.match(path)
+                if m:
+                    run_id = int(m.group(1))
+                    reason = None
+                    if isinstance(body, dict):
+                        reason = body.get("reason")
+                    ok = engine.cancel_run(conn, run_id, reason=reason)
+                    if ok:
+                        self._json(200, {"cancelled": True, "run_id": run_id})
+                    else:
+                        self._json(404, {"error": "run not found or already terminal"})
+                    return
+                m = _API_TRIGGER_RE.match(path)
+                if m:
+                    name = m.group(1)
+                    payload = (body or {}).get("payload") if isinstance(body, dict) else None
+                    trigger_kind = (body or {}).get("trigger_kind", "api") if isinstance(body, dict) else "api"
+                    try:
+                        run_id = engine.trigger_run(conn, name, trigger_kind, payload)
+                    except KeyError:
+                        self._json(404, {"error": f"no workflow {name!r}"})
+                        return
+                    self._json(202, {"run_id": run_id})
+                    return
+                m = _API_SIGNAL_RE.match(path)
+                if m:
+                    rid, sname = int(m.group(1)), m.group(2)
+                    payload = (body or {}).get("payload") if isinstance(body, dict) else None
+                    try:
+                        sid = engine.send_signal(conn, rid, sname, payload)
+                    except sqlite3.IntegrityError:
+                        self._json(404, {"error": f"no run {rid}"})
+                        return
+                    self._json(201, {"signal_id": sid})
+                    return
+                if path == "/api/crons":
+                    if not isinstance(body, dict) or "workflow_name" not in body or "cron_expr" not in body:
+                        self._json(400, {"error": "body must include workflow_name and cron_expr"})
+                        return
+                    try:
+                        tid = _scheduler.register_cron(conn, body["workflow_name"], body["cron_expr"])
+                    except ValueError as e:
+                        self._json(400, {"error": str(e)})
+                        return
+                    self._json(201, {"trigger_id": tid})
+                    return
+                self._json(404, {"error": "not found"})
+            finally:
+                conn.close()
+
+    return Handler
+
+
+def serve(db_path: str, host: str = "127.0.0.1", port: int = 8080,
+          auth_token: Optional[str] = None,
+          insecure_no_auth: bool = False,
+          tls_cert: Optional[str] = None,
+          tls_key: Optional[str] = None) -> HTTPServer:
+    """Boot the http server. Returns the server object (call serve_forever()).
+
+    auth_token defaults to env var AUTOMATON_TOKEN.
+    If neither is set and insecure_no_auth is False, POST routes return 401.
+
+    Pass tls_cert and tls_key together to wrap the listening socket in TLS.
+    Either both or neither - one without the other raises ValueError. When
+    TLS is on, responses include a Strict-Transport-Security header.
+    """
+    if auth_token is None:
+        auth_token = os.environ.get("AUTOMATON_TOKEN")
+    require_auth = not insecure_no_auth
+    if require_auth and not auth_token:
+        log.warning(
+            "no AUTOMATON_TOKEN set; POST routes will return 401. "
+            "Pass insecure_no_auth=True (or --insecure-no-auth) to allow writes."
+        )
+    if (tls_cert is None) != (tls_key is None):
+        raise ValueError(
+            "TLS needs both --tls-cert and --tls-key, or neither"
+        )
+    tls_enabled = tls_cert is not None
+    httpd = HTTPServer(
+        (host, port),
+        make_handler(db_path, auth_token, require_auth, tls_enabled=tls_enabled),
+    )
+    if tls_enabled:
+        import ssl
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        try:
+            ctx.load_cert_chain(certfile=tls_cert, keyfile=tls_key)
+        except (ssl.SSLError, FileNotFoundError, OSError) as e:
+            httpd.server_close()
+            raise ValueError(
+                f"could not load TLS cert/key ({tls_cert!r}, {tls_key!r}): {e}"
+            ) from e
+        httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+    return httpd

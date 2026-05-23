@@ -1,0 +1,27 @@
+# Fetch-then-forward pattern with templated data flow.
+#
+# Trigger:
+#   automaton trigger fetch_chain --payload '{"user_id":42}'
+name: fetch_chain
+steps:
+  - name: fetch
+    type: http
+    method: GET
+    url: "https://httpbin.org/anything?id=${{ run.payload.user_id }}"
+    timeout: 10
+    retry:
+      max: 3
+      backoff: exponential
+      initial_seconds: 2
+
+  - name: forward
+    type: http
+    needs: [fetch]
+    method: POST
+    url: https://httpbin.org/post
+    headers:
+      Content-Type: application/json
+    body:
+      forwarded_status: "${{ steps.fetch.output.status_code }}"
+      user_id: "${{ run.payload.user_id }}"
+      run_id: "${{ run.id }}"

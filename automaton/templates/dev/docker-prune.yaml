@@ -1,0 +1,21 @@
+# Weekly Docker cleanup: dangling images, stopped containers, build cache.
+#
+# Description: Frees disk on dev boxes that accumulate cruft. Reports
+#              before/after disk usage in the step output.
+# Required env: docker on PATH; user in the docker group
+# Cron: 0 4 * * SUN
+# Last verified: 2026-05-21
+name: docker-prune
+steps:
+  - name: before
+    type: shell
+    cmd: [docker, system, df]
+  - name: prune
+    type: shell
+    needs: [before]
+    cmd: [docker, system, prune, -af, --volumes]
+    timeout: 600
+  - name: after
+    type: shell
+    needs: [prune]
+    cmd: [docker, system, df]

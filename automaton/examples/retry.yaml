@@ -1,0 +1,31 @@
+# Demonstrates retry with exponential backoff.
+# The 'shell' step intentionally fails the first 2 times via a counter file.
+#
+# Uses `python -c` instead of `sh -c` so this example runs identically on
+# Linux, macOS, and Windows. Python is required to run automaton anyway, so
+# it's always on PATH.
+name: flaky_demo
+steps:
+  - name: flaky
+    type: shell
+    cmd:
+      - python
+      - -c
+      - |
+        import os, sys, tempfile
+        counter = os.path.join(tempfile.gettempdir(), "automaton-flaky-counter")
+        n = 1
+        if os.path.exists(counter):
+            with open(counter) as f:
+                n = int(f.read().strip() or 0) + 1
+        with open(counter, "w") as f:
+            f.write(str(n))
+        if n < 3:
+            print(f"attempt {n} failing")
+            sys.exit(1)
+        print(f"attempt {n} succeeded")
+        os.unlink(counter)
+    retry:
+      max: 3
+      backoff: exponential
+      initial_seconds: 1

@@ -1,0 +1,2 @@
+-- no-op placeholder; created during Phase 9 smoke testing.
+-- Safe to delete this file from a fresh checkout - yoyo doesn't re-apply applied migrations.

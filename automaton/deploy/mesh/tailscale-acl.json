@@ -1,0 +1,42 @@
+{
+  "// purpose": "Minimal ACL for a personal automaton deployment.",
+  "// model": "deny-by-default; only tagged owners hit tagged automaton hosts on serve ports.",
+  "// install": "Paste into the Tailscale admin UI under Access controls.",
+
+  "tagOwners": {
+    "tag:automaton":   ["autogroup:admin"],
+    "tag:automaton-client": ["autogroup:admin"]
+  },
+
+  "acls": [
+    {
+      "//": "Owners can reach the engine UI on whichever ports you serve on.",
+      "action": "accept",
+      "src":    ["tag:automaton-client"],
+      "dst":    ["tag:automaton:8080,8443"]
+    },
+    {
+      "//": "Allow the engine host to reach the same ports on itself (loopback over Tailscale isn't a thing, but worker -> ui via the tailnet IP is).",
+      "action": "accept",
+      "src":    ["tag:automaton"],
+      "dst":    ["tag:automaton:8080,8443"]
+    }
+  ],
+
+  "// ssh (optional)": "Drop this section if you don't want Tailscale SSH.",
+  "ssh": [
+    {
+      "action": "accept",
+      "src":    ["tag:automaton-client"],
+      "dst":    ["tag:automaton"],
+      "users":  ["autogroup:nonroot", "root"]
+    }
+  ],
+
+  "// tagging hosts": [
+    "After applying this ACL, tag your devices:",
+    "  tailscale up --advertise-tags=tag:automaton           # on the automaton host",
+    "  tailscale up --advertise-tags=tag:automaton-client    # on your laptop/phone",
+    "Or assign in the admin UI under Machines."
+  ]
+}

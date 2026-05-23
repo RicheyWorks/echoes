@@ -1,0 +1,19 @@
+# Health check: fetch a URL every 5 minutes; alert via notify on failure.
+#
+# Description: Polls a website and the engine's notification config sends
+#              a ping if it stops returning 2xx. Pairs with
+#              AUTOMATON_NOTIFY_ON_FAILURE.
+# Required env: none
+# Cron: */5 * * * *
+# Last verified: 2026-05-21
+name: website-up
+urgent: true
+steps:
+  - name: probe
+    type: http_get
+    url: "${{ run.payload.url }}"
+    timeout: 10
+    retry:
+      max: 3
+      backoff: exponential
+      initial_seconds: 5

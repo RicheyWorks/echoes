@@ -1,0 +1,73 @@
+# Headscale config for a single-person tailnet that hosts automaton.
+# Reference: https://github.com/juanfont/headscale/blob/main/config-example.yaml
+#
+# Defaults are fine for personal use; the items you actually need to change
+# are flagged with "CHANGE ME".
+
+# Public URL devices register with. Needs a real cert (Let's Encrypt) and
+# port 443 reachable from the public internet (or your tailnet's edge).
+# CHANGE ME:
+server_url: https://headscale.example.com:443
+
+# Where Headscale's API listens locally. Stay on 8080 unless something
+# else owns the port.
+listen_addr: 0.0.0.0:8080
+
+# Metrics endpoint (Prometheus format). Optional, useful for monitoring.
+metrics_listen_addr: 127.0.0.1:9090
+
+# Tailscale-default IP space. Devices get addresses out of these.
+ip_prefixes:
+  - 100.64.0.0/10
+  - fd7a:115c:a1e0::/48
+
+# DERP servers (UDP relay fallback when peers can't connect directly).
+# Using the default Tailscale relays is fine; flip use_official_only=false
+# and add your own URL if you self-host a derper.
+derp:
+  server:
+    enabled: false
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  paths: []
+  auto_update_enabled: true
+  update_frequency: 24h
+
+# Disable check updates (Headscale itself; doesn't affect tailscale clients).
+disable_check_updates: true
+
+# Ephemeral node cleanup. Devices that haven't pinged in this long get
+# removed. 30m is comfortable; bump it if your devices sleep a lot.
+ephemeral_node_inactivity_timeout: 30m
+
+# Where Headscale's state DB lives. SQLite is fine for one tailnet.
+database:
+  type: sqlite3
+  sqlite:
+    path: /var/lib/headscale/db.sqlite
+
+# Logging. "info" is fine; "debug" if something's wrong.
+log:
+  format: text
+  level: info
+
+# Persistent paths.
+acl_policy_path: /etc/headscale/acl.hujson    # optional - see tailscale-acl.json
+oidc:
+  # Skip OIDC for a one-person setup; preauth keys are simpler.
+  only_start_if_oidc_is_available: false
+
+# TLS termination for the public-facing API. If you front Headscale with
+# nginx/Caddy, leave these empty and terminate at the proxy. Otherwise:
+# tls_cert_path: /etc/letsencrypt/live/headscale.example.com/fullchain.pem
+# tls_key_path:  /etc/letsencrypt/live/headscale.example.com/privkey.pem
+# tls_letsencrypt_hostname: headscale.example.com
+# tls_letsencrypt_listen: ":http"
+# tls_letsencrypt_cache_dir: /var/lib/headscale/cache
+
+# After install:
+#   sudo systemctl enable --now headscale
+#   sudo headscale users create my-stuff
+#   sudo headscale --user my-stuff preauthkeys create --reusable --expiration 24h
+#   # On each device:
+#   sudo tailscale up --login-server https://headscale.example.com --authkey nodekey:...

@@ -1,0 +1,27 @@
+# Agent-in-the-loop pattern. Step 1 logs that we kicked off, step 2 parks
+# until an agent posts a signal with its answer, step 3 uses the answer.
+#
+# Trigger: automaton trigger agent_loop
+# Resume:  automaton signal <RUN_ID> agent_response --payload '{"answer":42}'
+#
+# Log path is relative so this works on Linux, macOS, and Windows. Override
+# `path:` if you want it written somewhere specific.
+name: agent_loop
+steps:
+  - name: kickoff
+    type: file_append
+    path: ./automaton-agent.log
+    text: "kickoff: waiting on agent for run ${{ run.id }}"
+
+  - name: wait_for_agent
+    type: wait_for_signal
+    needs: [kickoff]
+    signal: agent_response
+    poll_seconds: 2
+    timeout_seconds: 3600
+
+  - name: log_answer
+    type: file_append
+    needs: [wait_for_agent]
+    path: ./automaton-agent.log
+    text: "answer for run ${{ run.id }}: ${{ steps.wait_for_agent.output.payload }}"

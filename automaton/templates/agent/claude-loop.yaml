@@ -1,0 +1,30 @@
+# Agent-in-the-loop pattern: pose a question, wait for an answer signal,
+# act on it.
+#
+# Description: Logs the kickoff, parks on `agent_response`, then uses
+#              the agent's reply in a follow-up step. Trigger with a
+#              question in the payload; resume with:
+#                 automaton signal <RUN_ID> agent_response \
+#                     --payload '{"answer": "..."}'
+# Required env: none
+# Cron: trigger manually or from a webhook
+# Last verified: 2026-05-21
+name: claude-loop
+steps:
+  - name: kickoff
+    type: file_append
+    path: ./claude-loop.log
+    text: "kickoff: question=${{ run.payload.question }}"
+
+  - name: wait_for_agent
+    type: wait_for_signal
+    needs: [kickoff]
+    signal: agent_response
+    poll_seconds: 5
+    timeout_seconds: 3600
+
+  - name: log_answer
+    type: file_append
+    needs: [wait_for_agent]
+    path: ./claude-loop.log
+    text: "answer for run ${{ run.id }}: ${{ steps.wait_for_agent.output.payload }}"

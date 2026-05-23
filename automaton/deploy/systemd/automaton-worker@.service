@@ -1,0 +1,23 @@
+[Unit]
+Description=automaton worker %i
+After=network.target
+PartOf=automaton.target
+
+[Service]
+Type=simple
+User=automaton
+Group=automaton
+EnvironmentFile=/etc/automaton/automaton.env
+ExecStart=/opt/automaton/venv/bin/automaton worker
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/automaton /var/log/automaton
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,26 @@
+# Mirror a GitHub repo to a local bare repo.
+#
+# Description: nightly clone --mirror + remote update against a local
+#              storage path. Useful for self-hosted backups of code you
+#              don't entirely trust to GitHub.
+# Required secrets: GITHUB_TOKEN (only for private repos)
+# Required env: git on PATH
+# Cron: 0 2 * * *
+# Last verified: 2026-05-21
+name: git-mirror
+steps:
+  - name: clone-or-update
+    type: shell
+    cmd:
+      - sh
+      - -c
+      - |
+        set -euo pipefail
+        DEST="${{ run.payload.dest }}"
+        URL="${{ run.payload.url }}"
+        if [ -d "$DEST" ]; then
+          git -C "$DEST" remote update --prune
+        else
+          git clone --mirror "$URL" "$DEST"
+        fi
+    timeout: 600

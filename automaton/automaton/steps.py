@@ -1,0 +1,300 @@
+"""Step types.
+
+Built-in step types live below. External plugins register via the
+'automaton.step_types' entry-point group; importing the named module is
+expected to call @step_type at module scope.
+
+Step handler signature (current):
+    def handler(spec, idempotency_key, context=None) -> dict
+
+`context` is an optional StepContext (see below) carrying run_id, step_name,
+attempt, and a DB connection. Handlers that don't need it can keep the
+older two-arg signature - the engine introspects and only passes context
+when the handler accepts it.
+
+Exceptions handlers may raise:
+- StepError: this step failed. The engine records the failure and may retry
+  per the workflow's retry policy.
+- StepWaiting: this step isn't done yet; come back later. The engine
+  re-queues the SAME step row (same idempotency key) with a future ready_at.
+  Use for wait-for-signal / wait-for-condition patterns.
+"""
+from __future__ import annotations
+
+import inspect
+import logging
+import sqlite3
+from dataclasses import dataclass
+from importlib.metadata import entry_points
+from typing import Any, Callable, Optional
+
+import httpx
+
+log = logging.getLogger("automaton.steps")
+
+
+class StepError(Exception):
+    def __init__(self, message, details=None):
+        super().__init__(message)
+        self.details = details or {}
+
+
+class StepWaiting(Exception):
+    """Raised by a step that isn't done yet. The engine re-queues it.
+
+    retry_after_seconds: when the step should next be polled.
+    reason: optional human-readable note included in the event log.
+    """
+    def __init__(self, retry_after_seconds: float = 5.0, reason: str = ""):
+        super().__init__(reason or "waiting")
+        self.retry_after_seconds = float(retry_after_seconds)
+        self.reason = reason
+
+
+@dataclass
+class StepContext:
+    run_id: int
+    step_name: str
+    attempt: int
+    conn: sqlite3.Connection
+
+
+_STEP_TYPES: dict[str, Callable] = {}
+_PLUGINS_LOADED = False
+
+
+def step_type(name):
+    def decorator(fn):
+        _STEP_TYPES[name] = fn
+        return fn
+    return decorator
+
+
+def _load_plugins():
+    global _PLUGINS_LOADED
+    if _PLUGINS_LOADED:
+        return
+    _PLUGINS_LOADED = True
+    try:
+        eps = entry_points(group="automaton.step_types")
+    except TypeError:
+        eps = entry_points().get("automaton.step_types", [])
+    for ep in eps:
+        try:
+            ep.load()
+            log.info("loaded step-type plugin: %s -> %s", ep.name, ep.value)
+        except Exception as e:
+            log.error("failed to load step-type plugin %s (%s): %s",
+                      ep.name, ep.value, e)
+
+
+def registered_types():
+    _load_plugins()
+    return sorted(_STEP_TYPES.keys())
+
+
+def run_step(spec, idempotency_key, context: Optional[StepContext] = None):
+    """Dispatch a step. Step handlers may take (spec, key) or (spec, key, context)."""
+    _load_plugins()
+    type_name = spec.get("type")
+    if type_name not in _STEP_TYPES:
+        raise StepError(
+            f"unknown step type: {type_name!r}. "
+            f"Known types: {sorted(_STEP_TYPES.keys())}"
+        )
+    handler = _STEP_TYPES[type_name]
+    sig = inspect.signature(handler)
+    if "context" in sig.parameters:
+        return handler(spec, idempotency_key, context=context)
+    return handler(spec, idempotency_key)
+
+
+# --- built-in step types ---
+
+@step_type("http_get")
+def _http_get(spec, idempotency_key):
+    url = spec["url"]
+    timeout = spec.get("timeout", 10.0)
+    headers = dict(spec.get("headers") or {})
+    headers["Idempotency-Key"] = idempotency_key
+    try:
+        r = httpx.get(url, headers=headers, timeout=timeout)
+    except Exception as e:
+        raise StepError(f"http_get failed: {e}", {"url": url}) from e
+    return {"status_code": r.status_code, "headers": dict(r.headers),
+            "body": r.text[:10000]}
+
+
+@step_type("file_append")
+def _file_append(spec, idempotency_key):
+    """Self-deduplicating: writes a line tagged with the idempotency key,
+    or no-ops if a marker with that key is already present.
+
+    UTF-8 and \\n line endings are forced for cross-platform consistency
+    (Windows would otherwise default to cp1252 / CRLF).
+    """
+    path = spec["path"]
+    text = spec.get("text", "x")
+    marker = f"[{idempotency_key}]"
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            existing = f.read()
+    except FileNotFoundError:
+        existing = ""
+    if marker in existing:
+        return {"appended": False, "reason": "idempotency_key already present"}
+    with open(path, "a", encoding="utf-8", newline="\n") as f:
+        f.write(f"{marker}{text}\n")
+    return {"appended": True}
+
+
+@step_type("wait_for_signal")
+def _wait_for_signal(spec, idempotency_key, context: Optional[StepContext] = None):
+    """Park until a signal with `name` arrives for this run, or timeout.
+
+    spec fields:
+      signal (required): signal name to wait for
+      timeout_seconds (default 3600): give up after this many seconds
+      poll_seconds (default 5): how often to re-check
+
+    On signal: returns {payload, sent_at}, signal is marked consumed.
+    On timeout: StepError.
+    Otherwise: StepWaiting, the engine re-queues this step.
+    """
+    if context is None:
+        raise StepError("wait_for_signal requires the engine to pass a context "
+                        "(this is a bug; report it)")
+    # 'signal' is the signal name this step waits for. We can't use 'name'
+    # because that collides with the step's own identifier in the workflow.
+    signal_name = spec.get("signal")
+    if not signal_name:
+        raise StepError("wait_for_signal: missing required 'signal' field")
+    timeout = float(spec.get("timeout_seconds", 3600))
+    poll = float(spec.get("poll_seconds", 5.0))
+    conn = context.conn
+
+    # Look for an unconsumed signal matching (this run, this name).
+    row = conn.execute(
+        "SELECT id, payload_json, sent_at FROM signal "
+        "WHERE run_id = ? AND name = ? AND consumed_at IS NULL "
+        "ORDER BY sent_at LIMIT 1",
+        (context.run_id, signal_name),
+    ).fetchone()
+    if row is not None:
+        # Consume it.
+        conn.execute(
+            "UPDATE signal SET consumed_at = datetime('now'), "
+            "  consumed_by_step_id = (SELECT id FROM step WHERE run_id = ? "
+            "                          AND name = ? AND attempt = ?) "
+            "WHERE id = ?",
+            (context.run_id, context.step_name, context.attempt, row["id"]),
+        )
+        payload = None
+        if row["payload_json"]:
+            import json
+            payload = json.loads(row["payload_json"])
+        return {"signal_received": signal_name, "payload": payload, "sent_at": row["sent_at"]}
+
+    # Timeout check: look at the step's started_at to know when we first ran.
+    started = conn.execute(
+        "SELECT started_at FROM step WHERE run_id = ? AND name = ? AND attempt = ?",
+        (context.run_id, context.step_name, context.attempt),
+    ).fetchone()["started_at"]
+    if started:
+        elapsed = conn.execute(
+            "SELECT (julianday('now') - julianday(?)) * 86400 AS s",
+            (started,),
+        ).fetchone()["s"]
+        if elapsed is not None and elapsed >= timeout:
+            raise StepError(f"wait_for_signal timed out after {elapsed:.1f}s",
+                            {"signal": signal_name, "timeout_seconds": timeout})
+
+    # Not ready yet - tell the engine to come back later.
+    raise StepWaiting(retry_after_seconds=poll, reason=f"waiting for signal {signal_name!r}")
+
+
+@step_type("http")
+def _http(spec, idempotency_key):
+    """Generalized HTTP step. Supports GET/POST/PUT/DELETE/PATCH.
+
+    spec fields:
+      method (default 'GET'), url (required), headers (optional dict),
+      body (optional - dict gets JSON-serialized), timeout (default 30)
+    """
+    method = (spec.get("method") or "GET").upper()
+    url = spec["url"]
+    timeout = spec.get("timeout", 30.0)
+    headers = dict(spec.get("headers") or {})
+    headers.setdefault("Idempotency-Key", idempotency_key)
+    body = spec.get("body")
+    kwargs = {"headers": headers, "timeout": timeout}
+    if body is not None:
+        if isinstance(body, (dict, list)):
+            kwargs["json"] = body
+        else:
+            kwargs["content"] = str(body).encode("utf-8")
+    try:
+        r = httpx.request(method, url, **kwargs)
+    except Exception as e:
+        raise StepError(f"http {method} failed: {e}",
+                        {"url": url, "method": method}) from e
+    return {
+        "status_code": r.status_code,
+        "headers": dict(r.headers),
+        "body": r.text[:10000],
+    }
+
+
+@step_type("shell")
+def _shell(spec, idempotency_key):
+    """Run a command in a subprocess. Use with care: side effects depend on
+    the command being idempotent or rerun-safe.
+
+    spec fields:
+      cmd (required): list ['ls', '-la'] or string (no shell=True for safety)
+      cwd, env (optional), timeout (default 60),
+      ok_returncodes (default [0]): which exit codes count as success
+
+    Cross-platform notes:
+      - List form is portable; what you write is what subprocess gets.
+      - String form is tokenized with shlex. POSIX rules on macOS/Linux,
+        Windows rules (no backslash-as-escape) on Windows. If you need a
+        full shell pipeline, write a list like
+            ['sh', '-c', '...']      on POSIX, or
+            ['cmd.exe', '/c', '...'] on Windows.
+    """
+    import os
+    import subprocess  # local import - shell is opt-in
+    cmd = spec["cmd"]
+    if isinstance(cmd, str):
+        # shlex.split's default POSIX mode treats backslashes as escapes,
+        # which corrupts Windows paths like C:\Users\foo. posix=False fixes
+        # the tokenization on Windows without changing POSIX behavior.
+        import shlex
+        cmd = shlex.split(cmd, posix=(os.name != "nt"))
+    cwd = spec.get("cwd")
+    env_extra = spec.get("env") or {}
+    timeout = float(spec.get("timeout", 60))
+    ok = set(spec.get("ok_returncodes", [0]))
+
+    env = {**os.environ, **env_extra,
+           "AUTOMATON_IDEMPOTENCY_KEY": idempotency_key}
+    try:
+        r = subprocess.run(cmd, cwd=cwd, env=env, timeout=timeout,
+                           capture_output=True, text=True)
+    except FileNotFoundError as e:
+        raise StepError(f"shell: command not found: {e}", {"cmd": cmd}) from e
+    except subprocess.TimeoutExpired as e:
+        raise StepError(f"shell: timeout after {timeout}s",
+                        {"cmd": cmd, "timeout": timeout}) from e
+    if r.returncode not in ok:
+        raise StepError(
+            f"shell: returncode {r.returncode} not in {sorted(ok)}",
+            {"cmd": cmd, "returncode": r.returncode,
+             "stdout": r.stdout[:2000], "stderr": r.stderr[:2000]},
+        )
+    return {
+        "returncode": r.returncode,
+        "stdout": r.stdout[:10000],
+        "stderr": r.stderr[:2000],
+    }

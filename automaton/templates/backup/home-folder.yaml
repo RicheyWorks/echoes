@@ -1,0 +1,27 @@
+# Daily backup of a home folder to Backblaze B2 via rclone.
+#
+# Description: Sync a local directory to a B2 bucket nightly. Sends a
+#              notification on failure.
+# Required secrets: B2_KEY_ID, B2_APP_KEY (set via `automaton secret set`)
+# Required env: rclone must be installed and on PATH
+# Cron: every day at 03:15 local
+# Last verified: 2026-05-21
+name: backup-home-folder
+timezone: America/New_York
+steps:
+  - name: sync
+    type: shell
+    cmd:
+      - rclone
+      - sync
+      - "${{ run.payload.source }}"
+      - "b2:${{ run.payload.bucket }}/${{ run.payload.prefix }}"
+    env:
+      RCLONE_CONFIG_B2_TYPE: b2
+      RCLONE_CONFIG_B2_ACCOUNT: "${{ secret:B2_KEY_ID }}"
+      RCLONE_CONFIG_B2_KEY: "${{ secret:B2_APP_KEY }}"
+    timeout: 1800
+    retry:
+      max: 2
+      backoff: exponential
+      initial_seconds: 30

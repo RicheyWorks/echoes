@@ -1,0 +1,19 @@
+Metadata-Version: 2.4
+Name: automaton
+Version: 0.2.0
+Summary: A strongly consistent personal automation platform
+Requires-Python: >=3.10
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: httpx>=0.27
+Requires-Dist: croniter>=2.0
+Requires-Dist: yoyo-migrations>=9.0
+Requires-Dist: keyring>=25.0
+Requires-Dist: apprise>=1.10
+Provides-Extra: test
+Requires-Dist: pytest>=7.0; extra == "test"
+Requires-Dist: cryptography>=42.0; extra == "test"
+Requires-Dist: keyrings.alt>=5.0; extra == "test"
+Provides-Extra: tls
+Requires-Dist: cryptography>=42.0; extra == "tls"
+Provides-Extra: secrets-headless
+Requires-Dist: keyrings.alt>=5.0; extra == "secrets-headless"

@@ -1,0 +1,36 @@
+# Rotate log files older than N days using Python's compress + delete.
+#
+# Description: For a target directory, gzip files older than N days and
+#              delete files older than M days. Self-contained: doesn't
+#              touch logrotate. Useful for app-managed logs.
+# Required env: python on PATH
+# Cron: 0 5 * * *
+# Last verified: 2026-05-21
+name: log-rotation
+steps:
+  - name: rotate
+    type: shell
+    cmd:
+      - python
+      - -c
+      - |
+        import os, gzip, shutil, time, sys
+        target = "${{ run.payload.target }}"
+        gz_after = int("${{ run.payload.gz_after_days }}" or "7")
+        rm_after = int("${{ run.payload.rm_after_days }}" or "60")
+        now = time.time()
+        gz_cut = now - gz_after * 86400
+        rm_cut = now - rm_after * 86400
+        gzipped = removed = 0
+        for f in os.listdir(target):
+            full = os.path.join(target, f)
+            if not os.path.isfile(full):
+                continue
+            mt = os.path.getmtime(full)
+            if f.endswith(".gz") and mt < rm_cut:
+                os.remove(full); removed += 1
+            elif not f.endswith(".gz") and mt < gz_cut:
+                with open(full, "rb") as src_f, gzip.open(full + ".gz", "wb") as dst:
+                    shutil.copyfileobj(src_f, dst)
+                os.remove(full); gzipped += 1
+        print(f"gzipped {gzipped}, removed {removed}")

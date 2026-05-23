@@ -1,0 +1,14 @@
+# Minimal two-step workflow. Writes to a log file in the current working
+# directory so it works on Linux, macOS, and Windows without modification.
+# Override `path:` if you want it written somewhere specific.
+name: hello
+steps:
+  - name: greet
+    type: file_append
+    path: ./automaton-hello.log
+    text: "hello from automaton"
+  - name: again
+    type: file_append
+    needs: [greet]
+    path: ./automaton-hello.log
+    text: "step two ran after step one"

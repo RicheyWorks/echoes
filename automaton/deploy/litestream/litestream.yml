@@ -1,0 +1,56 @@
+# Litestream config for streaming automaton's SQLite WAL to off-host storage.
+#
+# Recovery point objective drops from "last cron snapshot" to "under a
+# second" because Litestream ships WAL frames as soon as they're flushed.
+# After install, this file lives at /etc/litestream.yml and is read by
+# the litestream daemon (e.g. via the bundled systemd unit).
+#
+# Reference: https://litestream.io/reference/config/
+# See deploy/litestream/README.md for the full setup walkthrough.
+
+# Where to look for the live DB. Adjust if you keep automaton.db
+# somewhere else (e.g. /var/lib/automaton/automaton.db).
+dbs:
+  - path: /var/lib/automaton/automaton.db
+
+    # One or more replicas. You can stack them - belt-and-braces is
+    # cheap when each replica is a couple of MB/month at most.
+    replicas:
+      # ---- Backblaze B2 (S3-compatible). Cheapest at ~$5/TB/month.
+      # CHANGE ME: bucket name, region, key id, application key.
+      - type: s3
+        bucket: automaton-backups
+        path: automaton.db
+        region: us-west-002
+        endpoint: https://s3.us-west-002.backblazeb2.com
+        access-key-id: ${B2_ACCESS_KEY_ID}
+        secret-access-key: ${B2_SECRET_ACCESS_KEY}
+        # How long to retain WAL frames + snapshots on the remote.
+        # 7 days is enough to recover from "I deleted a workflow last
+        # Wednesday and need to roll back."
+        retention: 168h
+        snapshot-interval: 12h
+        sync-interval: 1s
+
+      # ---- rsync.net via SFTP. Drop-in alternative if you don't want
+      # an S3-style API in the loop. Comment out the s3 block above if
+      # you only use one.
+      # - type: sftp
+      #   host: user-xxxx.rsync.net
+      #   user: user-xxxx
+      #   path: backups/automaton.db
+      #   key-path: /etc/litestream/rsync_id_ed25519
+      #   retention: 168h
+      #   snapshot-interval: 12h
+
+      # ---- MinIO (self-hosted S3 on your own VPS). Same config shape
+      # as Backblaze; just change the endpoint + creds.
+      # - type: s3
+      #   bucket: automaton-backups
+      #   path: automaton.db
+      #   region: us-east-1
+      #   endpoint: https://minio.example.com
+      #   access-key-id: ${MINIO_ACCESS_KEY}
+      #   secret-access-key: ${MINIO_SECRET_KEY}
+      #   retention: 168h
+      #   snapshot-interval: 12h

@@ -1,0 +1,18 @@
+# Let's Encrypt renew via certbot, with a reload hook.
+#
+# Description: Runs `certbot renew` twice-weekly. If anything was
+#              renewed, reloads nginx so the new cert is picked up.
+# Required env: certbot installed (snap or apt), sudo configured for
+#               nginx reload
+# Cron: 17 2 * * 1,4         (Mon & Thu at 02:17 local)
+# Last verified: 2026-05-21
+name: letsencrypt-renew
+steps:
+  - name: renew
+    type: shell
+    cmd: [sudo, certbot, renew, --quiet]
+    timeout: 600
+  - name: reload-nginx
+    type: shell
+    needs: [renew]
+    cmd: [sudo, systemctl, reload, nginx]

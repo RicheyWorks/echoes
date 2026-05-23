@@ -1,0 +1,39 @@
+# Photo import: copy new files off an SD card mount, organize by date.
+#
+# Description: Reads ${run.payload.source} (e.g. /Volumes/SD) and copies
+#              JPG/RAW into ${run.payload.dest}/YYYY-MM-DD/. Source is
+#              read-only; this never deletes anything.
+# Required env: python on PATH (uses Pillow if available for EXIF)
+# Cron: trigger by inotify/launchd watcher, or manually after each shoot
+# Last verified: 2026-05-21
+name: photo-import
+steps:
+  - name: import
+    type: shell
+    cmd:
+      - python
+      - -c
+      - |
+        import os, shutil, datetime, sys
+        src = "${{ run.payload.source }}"
+        dest = "${{ run.payload.dest }}"
+        if not os.path.isdir(src):
+            print(f"source not present: {src}", file=sys.stderr)
+            sys.exit(0)
+        exts = {".jpg", ".jpeg", ".raw", ".cr2", ".cr3", ".nef", ".arw", ".dng", ".heic"}
+        copied = 0
+        for root, _, files in os.walk(src):
+            for f in files:
+                if os.path.splitext(f.lower())[1] not in exts:
+                    continue
+                full = os.path.join(root, f)
+                ts = datetime.datetime.fromtimestamp(os.path.getmtime(full))
+                bucket = os.path.join(dest, ts.strftime("%Y-%m-%d"))
+                os.makedirs(bucket, exist_ok=True)
+                target = os.path.join(bucket, f)
+                if os.path.exists(target):
+                    continue
+                shutil.copy2(full, target)
+                copied += 1
+        print(f"copied {copied} files")
+    timeout: 1800

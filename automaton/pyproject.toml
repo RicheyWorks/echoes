@@ -1,0 +1,43 @@
+[project]
+name = "automaton"
+version = "0.2.0"
+description = "A strongly consistent personal automation platform"
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+    "croniter>=2.0",
+    "yoyo-migrations>=9.0",
+    "keyring>=25.0",
+    "apprise>=1.10",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7.0", "cryptography>=42.0", "keyrings.alt>=5.0"]
+# TLS cert generation for the built-in UI server. `automaton tls init`
+# requires this; the engine and CLI work without it.
+tls = ["cryptography>=42.0"]
+# Encrypted-file fallback keyring for headless Linux servers (no D-Bus).
+secrets-headless = ["keyrings.alt>=5.0"]
+
+[project.scripts]
+automaton = "automaton.cli:main"
+
+# External step types register here. Each entry's value must point to a
+# module that calls @step_type("name") on import. The plugin is discovered
+# automatically on startup; no edit to steps.py required.
+[project.entry-points."automaton.step_types"]
+# Example - external packages declare entries like:
+# my_step = "my_package.module"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["automaton*", "templates*"]
+
+[tool.setuptools.package-data]
+automaton = ["migrations/*.sql"]
+templates = ["**/*.yaml", "INDEX.md"]

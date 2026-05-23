@@ -1,0 +1,24 @@
+[Unit]
+Description=automaton UI + API (HTTP)
+After=network.target
+PartOf=automaton.target
+
+[Service]
+Type=simple
+User=automaton
+Group=automaton
+EnvironmentFile=/etc/automaton/automaton.env
+# Default: localhost only. Put a TLS-terminating reverse proxy in front
+# if you need LAN/internet access.
+ExecStart=/opt/automaton/venv/bin/automaton serve --host 127.0.0.1 --port 8080
+Restart=always
+RestartSec=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/automaton
+ReadWritePaths=/var/log/automaton
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

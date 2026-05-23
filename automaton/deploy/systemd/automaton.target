@@ -1,0 +1,6 @@
+[Unit]
+Description=automaton stack (worker + scheduler + ui)
+Wants=automaton-worker.service automaton-scheduler.service automaton-ui.service
+
+[Install]
+WantedBy=multi-user.target
