@@ -1,4 +1,4 @@
-# automaton  (v0.3.0)
+# automaton  (v0.5.0)
 
 A strongly consistent personal automation platform.
 
@@ -17,6 +17,7 @@ Requires Python 3.10+. Optional extras:
 ```bash
 pip install "automaton-engine[tls]"               # automaton tls init
 pip install "automaton-engine[secrets-headless]"  # encrypted keyring on headless Linux
+pip install "automaton-engine[postgres]"          # Postgres backend (set AUTOMATON_DB_URL)
 ```
 
 **Docker (quickest path to all three processes):**
@@ -93,12 +94,34 @@ automaton serve               # http://127.0.0.1:8080 - live dashboard
 | `automaton backup DEST` | Online snapshot of the live DB to a file (with `PRAGMA integrity_check`). |
 | `automaton restore SRC [--force]` | Restore the live DB from a snapshot; verifies integrity + schema. |
 | `automaton init NAME --template SLUG` | Copy a built-in workflow template into the current directory. `automaton init --list` shows the catalog. |
+| `automaton migrate [--dry-run]` | Apply pending schema migrations. `--dry-run` reports without applying. Takes a pre-migrate snapshot automatically. |
+| `automaton tls init [--hostname H] [--san H ...]` | Generate a self-signed cert + key under `tls/`. |
+| `automaton secret set\|get\|rm\|ls\|import` | Manage secrets in the OS keyring (macOS Keychain, Windows Credential Manager, Linux Secret Service). |
+| `automaton key create NAME [--role admin\|operator\|viewer]` | Create an API key; prints the plaintext **once**. Default role: `operator`. |
+| `automaton key list` | List all API keys (id, name, role, active, created/last-used timestamps). |
+| `automaton key revoke NAME_OR_ID` | Deactivate an API key by name or id. |
+| `automaton notify test` | Fire a test notification to verify Apprise configuration. |
+| `automaton mesh status` | Print Tailscale IP, MagicDNS hostname, peer count, and whether `automaton serve` is listening. |
+| `automaton backup DEST` | Online SQLite snapshot with `PRAGMA integrity_check`. |
+| `automaton restore SRC [--force]` | Restore the live DB from a snapshot; verifies integrity + schema version. |
 
-DB location: `./automaton.db` by default; override with `AUTOMATON_DB`.
+DB location: `./automaton.db` by default; override with `AUTOMATON_DB`. Set `AUTOMATON_DB_URL=postgresql://...` to use the Postgres backend instead.
 
 ## HTTP API (for agents and integrations)
 
-`automaton serve` exposes both read and write routes. Read routes are open; write routes require `Authorization: Bearer $AUTOMATON_TOKEN` unless you pass `--insecure-no-auth`.
+`automaton serve` uses a **role-based access model** with two credential types:
+
+- **`AUTOMATON_TOKEN` env var** — the original single shared secret; always resolves to the `admin` role and is backward-compatible with existing setups.
+- **DB-stored API keys** — scoped tokens created with `automaton key create`. Three roles:
+  - `admin` — full access including key management
+  - `operator` — all reads + write routes (trigger, signal, cancel, agents)
+  - `viewer` — read routes only
+
+Every request must carry `Authorization: Bearer <TOKEN>` (or `?token=<TOKEN>` as a query-string fallback for browser bookmarks). Unauthenticated requests get **401**; authenticated requests that lack the required role get **403**.
+
+Pass `--insecure-no-auth` to disable auth entirely (local dev only), or `--insecure-read-no-auth` to keep write-route auth while opening reads for tools like Prometheus that can't send headers.
+
+Always-open routes (no token required regardless of flags): `/healthz`, `/health`, `/manifest.json`, `/sw.js`.
 
 **Read**
 - `GET /api/runs` - list recent runs
@@ -114,7 +137,19 @@ DB location: `./automaton.db` by default; override with `AUTOMATON_DB`.
 - `POST /api/signals/<run_id>/<name>` - body: optional `{"payload": ...}` - returns `{signal_id}`
 - `POST /api/run/<id>/cancel` - body: optional `{"reason": ...}` - returns `{cancelled: true, run_id}`
 
-Plus `GET /api/signals` to list recent signals and `GET /api/webhooks` to list webhook endpoints (read routes, no auth).
+Plus `GET /api/signals` to list recent signals and `GET /api/webhooks` to list webhook endpoints.
+
+**Agent memory API** — persistent store for `echoes` agents (requires token):
+- `GET  /api/agents` — list all agents (`name`, `goal`, `tick`, `updated_at`)
+- `GET  /api/agents/<name>/meta` — one agent's metadata row (404 if not found)
+- `POST /api/agents/<name>/meta` — upsert agent row; body: `{"goal": "...", "tick": N}`
+- `GET  /api/agents/<name>/entries` — all memory entries ordered by tick
+- `POST /api/agents/<name>/entries` — append one entry; returns 409 on duplicate tick
+
+**Key management API** (admin role only)
+- `GET  /api/keys`               — list all API keys (id, name, role, active, timestamps; no hash)
+- `POST /api/keys`               — body: `{"name": "...", "role": "..."}` — creates key, returns plaintext **once**
+- `DELETE /api/keys/<name_or_id>` — revoke a key by name or id
 
 **Webhook receiver** (separate auth: per-endpoint HMAC signature, not bearer token)
 - `POST /webhook/<name>` - body: any JSON; signature in `X-Automaton-Signature` header (configurable per endpoint)
@@ -137,6 +172,9 @@ curl -X POST http://127.0.0.1:8080/api/trigger/hello \
 | `wait_for_signal` | `signal`, optional `poll_seconds`, `timeout_seconds` | Parks the run until a signal arrives. See [Signals](#signals) below. |
 | `http` | `method`, `url`, optional `headers`, `body`, `timeout` | Any HTTP verb. JSON body if dict/list; raw string otherwise. |
 | `shell` | `cmd` (list or string), optional `cwd`, `env`, `timeout`, `ok_returncodes` | Subprocess. Captures stdout/stderr/returncode. Use only with idempotent commands. |
+| `python` | `module`, `function`, optional `args`, `kwargs` | Calls `module.function(*args, **kwargs)` in-process. Captures stdout and return value. |
+| `foreach` | `items`, `step` (nested spec), optional `fail_fast` | Fan-out: runs the nested step once per item. `${{ item }}` and `${{ item_index }}` available inside. `fail_fast: true` (default) stops on first failure. |
+| `echoes_agent` | `ticks`, optional `db`, `name`, `goal`, `action`, `report` | Invokes the `echoes` binary. Stores Merkle root + `integrity_ok` in `output_json`. See [echoes integration](#echoes-integration). |
 
 ### Adding a step type in-tree
 
@@ -352,7 +390,10 @@ All daemon-loop output goes through stdlib `logging`. CLI user prints stay on st
 | Responsive web UI + PWA shell + SSE live updates | Done — Tailwind via CDN, `/manifest.json`, `/sw.js`, `/api/run/<id>/events`; proven by `tests/test_ui.py` |
 | macOS host support (launchd plists, install script, Homebrew formula) | Done — [`deploy/macos/`](deploy/macos/); proven by `tests/test_deploy_macos.py` |
 | Windows host support (NSSM services, PowerShell install) | Done — [`deploy/windows/`](deploy/windows/); proven by `tests/test_deploy_windows.py` |
-| Postgres backend for multi-machine workers | **Not yet**. Schema is portable. |
+| Postgres backend for multi-machine workers | Done — `automaton/pg.py`; set `AUTOMATON_DB_URL=postgresql://...`; `pip install automaton-engine[postgres]` |
+| Agent memory HTTP API (`/api/agents/*`) | Done — five Bearer-auth routes; `agents.py` CRUD; migration `0004-agents.sql` |
+| Multi-tenant API key auth (roles: admin/operator/viewer) | Done — `auth.py`, migration `0005-api-keys.sql`, `automaton key` CLI; proven by `tests/test_multitenancy.py` |
+| echoes `RemoteStore` integration | Done — `AgentStore` trait in Rust; `--remote-store URL --token TOKEN` on `echoes run` |
 
 ## Layout
 
@@ -361,7 +402,7 @@ automaton/
   __init__.py
   __main__.py        — module entrypoint
   cli.py             — argparse subcommands
-  migrations/        — yoyo SQL migrations (canonical schema; 0001-initial.sql is the original schema)
+  migrations/        — yoyo SQL migrations (0001-initial through 0005-api-keys; 0005 adds the api_keys table)
   db.py              — connection + migration entry point (routes through automaton.migrate)
   migrate.py         — yoyo wrapper: shim for pre-yoyo DBs, pre-migrate snapshot, startup gate
   tls.py             — self-signed cert helper (cryptography-backed)
@@ -379,6 +420,9 @@ automaton/
   prune.py           — delete old terminal runs and cascade rows
   client.py          — Python client (AutomatonClient) for agents
   models.py          — informational dataclasses
+  agents.py          — agent memory CRUD (get_agent, upsert_agent, append_entry, get_entries, list_agents, delete_agent)
+  auth.py            — API key lifecycle: generate_key, hash_key, create/revoke/list + role helpers (role_can_read, role_can_write, role_is_admin)
+  pg.py              — Postgres backend: PgConn adapter + open_store() routing factory
 examples/
   hello.yaml         — two-step DAG demo
   agent_loop.yaml    — wait_for_signal pattern for human/agent in the loop
@@ -422,6 +466,9 @@ tests/
   test_ui.py           — Tailwind shell + manifest + service worker + SSE live updates + query-string token
   test_deploy_macos.py — plists parse + executables + Homebrew formula references the right runtime deps
   test_deploy_windows.py — PowerShell scripts reference each service + require admin + set auto-start + log rotation
+  test_agents.py        — 26 HTTP-level tests for /api/agents/* (CRUD, auth, 409 on duplicate tick, full lifecycle)
+  test_multitenancy.py  — 37 integration tests: admin/operator/viewer roles, revoked keys, last_used_at tracking, 401 vs 403, key round-trips
+  test_postgres.py     — 11 unit + 15 integration tests for Postgres backend (skipped without AUTOMATON_TEST_PG_URL)
   load/                — standalone load scripts (steady_state, burst, long_tail)
   _plugin_fixture.py   — pretend external plugin module
 ```
@@ -433,7 +480,7 @@ pip install pytest
 python -m pytest tests/
 ```
 
-All 409 tests should pass in under 30 seconds. The headline ones are:
+All 795 tests should pass in under 60 seconds (Postgres integration tests are skipped without `AUTOMATON_TEST_PG_URL`). The headline ones are:
 - `test_exactly_once_under_crash` — kill the worker mid-step, assert exactly-once side effect.
 - `test_two_schedulers_one_run` — two scheduler threads on the same overdue trigger produce exactly one run.
 - `test_retries_succeed_on_third_attempt` — failing step retries successfully and the run completes.
@@ -452,7 +499,7 @@ All 409 tests should pass in under 30 seconds. The headline ones are:
 
 The CI matrix in `.github/workflows/test.yml` runs the full suite on
 **ubuntu-latest, macos-latest, and windows-latest** against Python 3.10,
-3.11, and 3.12 — nine combinations on every push and PR. Phases 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, and 13 of `PLATFORM-EXPANSION-PLAN.md` are closed.
+3.11, and 3.12 — nine combinations on every push and PR.
 
 ## Schema migrations
 
@@ -799,10 +846,11 @@ page opens a live `EventSource` to `/api/run/<id>/events` while the
 run is in flight, so the status pill updates without polling.
 
 The PWA manifest at `/manifest.json` + the one-page service worker at
+The PWA manifest at `/manifest.json` + the one-page service worker at
 `/sw.js` let the UI install to home screen on iOS Safari and Android
-Chrome. Combined with Phase 5's mesh networking + Phase 4's TLS,
-that's "open my phone on cellular, tap the automaton icon, see the
-runs" - no native app needed.
+Chrome. Combined with Tailscale mesh networking + TLS, that's "open
+my phone on cellular, tap the automaton icon, see the runs" — no
+native app needed.
 
 For browser bookmarks that prefer URL params over the `Authorization`
 header, GET routes accept `?token=...` as a fallback. POSTs still
@@ -840,6 +888,49 @@ every template through `engine.validate_spec` on every PR via
 `test_template_parses_and_validates`, so a schema change can't ship
 without bringing its templates along.
 
+## echoes integration
+
+[echoes](../echoes-v1.0-forensic/echoes/README.md) is the Rust forensic
+agent that lives in this repo. The `echoes_agent` step type lets any
+automaton workflow sandwich its steps between cryptographically-attested
+agent snapshots.
+
+```yaml
+name: secure_deploy
+steps:
+  - name: pre_check
+    type: echoes_agent
+    action: run
+    ticks: 10
+    db: /var/lib/echoes/deploy.db
+    report: true         # stores merkle_root + integrity_ok in output_json
+  - name: deploy
+    type: shell
+    needs: [pre_check]
+    cmd: ["./scripts/deploy.sh"]
+  - name: post_check
+    type: echoes_agent
+    needs: [deploy]
+    action: verify
+    db: /var/lib/echoes/deploy.db
+```
+
+The before/after Merkle roots land in automaton's run history — giving
+you tamper-evident proof of filesystem state at deploy time.
+
+For long-running agents that need memory across machines, use automaton
+as the persistence backend directly. Requires automaton ≥ v0.5.0 with
+`AUTOMATON_TOKEN` set:
+
+```bash
+echoes run --ticks 50 \
+    --remote-store http://192.168.1.10:8080 \
+    --token $AUTOMATON_TOKEN
+```
+
+Memory entries are stored via the Agent memory API (`/api/agents/*`)
+and resume automatically on the next run, even from a different machine.
+
 ## Scale envelope
 
 Measured numbers and the recommended cutoff for moving to Postgres
@@ -848,7 +939,8 @@ host comfortably sustains hundreds of noop runs/sec, burst-drains
 1000 runs through 4 workers in <1s, and short steps don't starve
 when concurrent 1-second steps are in flight. Past ~500 runs/sec
 sustained, write contention on the single SQLite writer becomes the
-bottleneck and Phase 16 (Postgres) starts to be the right answer.
+bottleneck and the Postgres backend (`AUTOMATON_DB_URL=postgresql://...`)
+becomes the right answer.
 
 The CI suite includes lightweight tripwires
 (`tests/test_load_regression.py`) that catch a ~5x slowdown on every
@@ -869,5 +961,21 @@ The production SQLite PRAGMAs (`WAL`, `synchronous=NORMAL`,
 
 ## Limitations to know about
 
-- **One host.** SQLite WAL handles many readers and one writer per database. Multiple worker *processes* on the same host work fine. Multiple hosts mean Postgres.
-- **`automaton serve` binds to localhost by def
+- **One host (SQLite path).** SQLite WAL handles many readers and one
+  writer per database. Multiple worker *processes* on the same host
+  work fine. Multiple hosts: set `AUTOMATON_DB_URL=postgresql://...`
+  to switch to the Postgres backend.
+- **`automaton serve` binds to localhost by default.** Pass
+  `--host 0.0.0.0` to listen externally, but only do that behind TLS
+  and with `AUTOMATON_TOKEN` set. The Tailscale path (`automaton mesh
+  status`) is the recommended way to reach the UI from other devices.
+- **No multi-tenancy.** A single `AUTOMATON_TOKEN` gates the whole
+  instance. If you need per-user access control, a reverse proxy with
+  auth (Caddy, nginx + auth_request) is the current answer.
+- **Secrets at rest are OS-keyring-encrypted, not app-layer-encrypted.**
+  The engine never writes secret values to the DB, but they live in the
+  OS keyring in whatever form that keyring uses. On a headless server,
+  use the `encrypted_file` backend and protect `AUTOMATON_KEYRING_PASSPHRASE`.
+- **`shell` steps are not sandboxed.** Run only commands you'd run by
+  hand. An attacker who can register workflows can run arbitrary code
+  with the worker's privileges.
