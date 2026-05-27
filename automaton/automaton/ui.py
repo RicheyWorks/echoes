@@ -1,6 +1,7 @@
 """Inspection UI + JSON API over the automaton state store.
 
-Read routes (no auth required when bound to localhost):
+Read routes (require Authorization: Bearer <TOKEN> when AUTOMATON_TOKEN is set,
+unless --insecure-read-no-auth is passed):
   GET  /                      list recent runs (HTML)
   GET  /run/<id>              one run (HTML)
   GET  /crons                 cron triggers (HTML)
@@ -8,16 +9,29 @@ Read routes (no auth required when bound to localhost):
   GET  /api/run/<id>          run detail
   GET  /api/crons             cron triggers
   GET  /api/step_types        list registered step types (built-in + plugins)
+  GET  /metrics               Prometheus metrics
+
+Always-open routes (no auth, safe to expose for liveness checks / PWA):
+  GET  /healthz               liveness probe
+  GET  /manifest.json         PWA manifest
+  GET  /sw.js                 PWA service worker
 
 Write routes (require Authorization: Bearer <TOKEN> when AUTOMATON_TOKEN is set):
   POST /api/workflows         body: workflow YAML/JSON spec  -> {workflow_def_id}
   POST /api/trigger/<name>    body: optional {"payload": ...} -> {run_id}
   POST /api/crons             body: {"workflow_name", "cron_expr"} -> {trigger_id}
 
+Agent memory routes (echoes Option C integration):
+  GET  /api/agents                     list all agents (name, goal, tick, updated_at)
+  GET  /api/agents/<name>/meta         one agent's metadata row
+  POST /api/agents/<name>/meta         upsert agent metadata  body: {goal, tick}
+  GET  /api/agents/<name>/entries      all memory entries ordered by tick ASC
+  POST /api/agents/<name>/entries      append one entry  body: MemoryEntry JSON
+
 Auth model: a single shared bearer token in env var AUTOMATON_TOKEN.
-If unset, write routes return 403 unless --insecure-no-auth is passed.
-Read routes are always open (the rationale is that the UI binds to 127.0.0.1
-by default; if you expose the UI, you should also set a token).
+Reads and writes both require it unless their respective --insecure-* flag is
+passed. Browser bookmarks can pass the token as ?token=<TOKEN> in the URL —
+this is logged at startup as a reminder that it leaks the token into server logs.
 """
 from __future__ import annotations
 
@@ -26,14 +40,19 @@ import json
 import logging
 import os
 import re
+import socket
 import sqlite3
+import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Optional
 
 import yaml
 
+from . import agents as _agents
+from . import auth as _auth
 from . import db as _db
 from . import engine
+from . import mesh as _mesh
 from . import metrics as _metrics
 from . import scheduler as _scheduler
 from . import steps as _steps
@@ -145,7 +164,68 @@ def _ts(val) -> str:
     return f'<time class="utc-ts" datetime="{html.escape(iso)}">{html.escape(s)}</time>'
 
 
-def render_run_list(conn, *, status=None, workflow=None, after=None, before=None):
+def render_mesh_card(mesh_info: dict) -> str:
+    """Compact Tailscale reachability card for the run-list page.
+
+    Only rendered when Tailscale is fully up (installed + running + logged in).
+    When the mesh is not configured, returns an empty string so the page stays
+    clean for local-only deployments.
+    """
+    if not (mesh_info.get("installed") and mesh_info.get("running")
+            and mesh_info.get("logged_in")):
+        return ""
+
+    ip = html.escape(mesh_info["ips"][0] if mesh_info["ips"] else "")
+    magic = html.escape(mesh_info.get("magic_dns") or "")
+    tailnet = html.escape(mesh_info.get("tailnet") or "")
+    peers = mesh_info.get("peers", 0)
+    hostname = html.escape(mesh_info.get("hostname") or "")
+
+    # Build the recommended Tailscale Serve URL (HTTPS via the ts.net cert).
+    serve_url = f"https://{magic}" if magic else (f"http://{ip}:8080" if ip else "")
+
+    copy_btn = ""
+    if serve_url:
+        escaped_url = html.escape(serve_url, quote=True)
+        copy_btn = (
+            f'<button onclick="navigator.clipboard.writeText(\'{escaped_url}\')" '
+            'class="text-xs text-slate-500 hover:text-blue-600 px-1.5 py-0.5 rounded '
+            'border border-slate-200 hover:border-blue-300" title="Copy URL">⎘ copy</button>'
+        )
+
+    serve_link = (
+        f'<a href="{html.escape(serve_url)}" target="_blank" rel="noopener" '
+        f'class="font-mono text-xs text-blue-700 hover:underline">{html.escape(serve_url)}</a> '
+        + copy_btn
+        if serve_url else '<span class="text-slate-400 text-xs">no URL yet</span>'
+    )
+
+    detail_parts = []
+    if ip:
+        detail_parts.append(f'IP <span class="font-mono">{ip}</span>')
+    if tailnet:
+        detail_parts.append(f'tailnet <span class="font-mono">{tailnet}</span>')
+    if hostname:
+        detail_parts.append(f'host <span class="font-mono">{hostname}</span>')
+    detail_parts.append(f'{peers} peer{"s" if peers != 1 else ""}')
+    details = " · ".join(detail_parts)
+
+    return (
+        '<div class="mt-6 bg-white border border-slate-200 rounded-lg p-3">'
+        '<div class="flex items-center justify-between gap-2 flex-wrap">'
+        '<div class="flex items-center gap-2">'
+        '<span class="inline-block w-2 h-2 rounded-full bg-emerald-500"></span>'
+        '<span class="text-sm font-medium text-slate-700">Connected to Tailscale</span>'
+        '</div>'
+        f'<div class="flex items-center gap-2">{serve_link}</div>'
+        '</div>'
+        f'<p class="text-xs text-slate-400 mt-1">{details}</p>'
+        '</div>'
+    )
+
+
+def render_run_list(conn, *, status=None, workflow=None, after=None, before=None,
+                    mesh_info: Optional[dict] = None):
     filtering = any(x is not None for x in (status, workflow, after, before))
     if filtering:
         runs = engine.search_runs(
@@ -185,7 +265,8 @@ def render_run_list(conn, *, status=None, workflow=None, after=None, before=None
     if not runs:
         return _page("automaton - runs",
                      '<h1 class="text-xl font-semibold mb-4">Runs</h1>' + filter_bar +
-                     '<p class="text-slate-500">No matching runs.</p>',
+                     '<p class="text-slate-500">No matching runs.</p>' +
+                     render_mesh_card(mesh_info or {}),
                      auto_refresh=0 if filtering else 5)
 
     # Desktop: table. Mobile: card list. Same data twice, with the
@@ -230,6 +311,7 @@ def render_run_list(conn, *, status=None, workflow=None, after=None, before=None
         + '<th class="text-left py-2 px-3">Finished</th></tr></thead>'
         + f'<tbody>{"".join(table_rows)}</tbody></table></div>'
         + '<p class="text-xs text-slate-400 mt-4">' + (f'{len(runs)} run(s) found.' if filtering else 'Auto-refreshes every 5 seconds.') + '</p>'
+        + render_mesh_card(mesh_info or {})
     )
     return _page("automaton - runs", body, auto_refresh=0 if filtering else 5)
 
@@ -577,10 +659,13 @@ _API_CANCEL_RE = re.compile(r"^/api/run/(\d+)/cancel/?$")
 _API_TRIGGER_RE = re.compile(r"^/api/trigger/([A-Za-z0-9_.-]+)/?$")
 _API_SIGNAL_RE = re.compile(r"^/api/signals/(\d+)/([A-Za-z0-9_.-]+)/?$")
 _WEBHOOK_RE = re.compile(r"^/webhook/([A-Za-z0-9_.-]+)/?$")
+_API_AGENT_META_RE = re.compile(r"^/api/agents/([A-Za-z0-9_.-]+)/meta/?$")
+_API_AGENT_ENTRIES_RE = re.compile(r"^/api/agents/([A-Za-z0-9_.-]+)/entries/?$")
 
 
 def make_handler(db_path: str, auth_token: Optional[str], require_auth: bool,
-                 tls_enabled: bool = False):
+                 tls_enabled: bool = False,
+                 require_read_auth: bool = True):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
             log.info("%s %s", self.command, self.path)
@@ -607,23 +692,60 @@ def make_handler(db_path: str, auth_token: Optional[str], require_auth: bool,
             length = int(self.headers.get("Content-Length") or 0)
             return self.rfile.read(length) if length else b""
 
-        def _check_auth(self) -> bool:
+        def _get_role(self) -> Optional[str]:
+            """
+            Resolve the caller's role from the request, or return ``None``
+            if the request is unauthenticated / carries an invalid token.
+
+            Resolution order:
+              1. ``insecure_no_auth`` flag → "admin" (dev mode, no token needed)
+              2. ``Authorization: Bearer <token>`` header
+                 a. Matches ``AUTOMATON_TOKEN`` env var → "admin"  (back-compat)
+                 b. Matches an active row in ``api_keys``  → that row's role
+              3. GET-only: ``?token=<token>`` query-string fallback (same checks)
+              4. Otherwise → None (caller should return 401)
+            """
             if not require_auth:
-                return True
+                return "admin"
+
+            raw = None
             got = self.headers.get("Authorization", "")
-            expected = f"Bearer {auth_token}"
-            if bool(auth_token) and got == expected:
-                return True
-            # GET-only fallback: ?token=... in the query string. Lets a
-            # browser bookmark work; logs a startup warning that this
-            # leaks the token into web server logs (see serve()).
-            if self.command == "GET" and auth_token:
+            if got.startswith("Bearer "):
+                raw = got[len("Bearer "):]
+            elif self.command == "GET":
                 from urllib.parse import urlparse, parse_qs
                 qs = parse_qs(urlparse(self.path).query)
-                token_q = (qs.get("token") or [""])[0]
-                if token_q == auth_token:
-                    return True
-            return False
+                raw = (qs.get("token") or [""])[0] or None
+
+            if not raw:
+                return None
+
+            # AUTOMATON_TOKEN always resolves to admin (backward compat).
+            if auth_token and raw == auth_token:
+                return "admin"
+
+            # DB-stored API keys.
+            try:
+                conn = _db.connect(db_path)
+                row = _auth.authenticate(conn, raw)
+                if row:
+                    _auth.touch_last_used(conn, row["id"])
+                    return row["role"]
+            except Exception:
+                pass
+            return None
+
+        def _check_auth(self) -> bool:
+            """Legacy helper — True when caller has operator-or-better role."""
+            role = self._get_role()
+            return role is not None and _auth.role_can_write(role)
+
+        def _check_read_auth(self) -> bool:
+            """Auth check for GET routes. Skipped when require_read_auth is False."""
+            if not require_read_auth:
+                return True
+            role = self._get_role()
+            return role is not None and _auth.role_can_read(role)
 
         # --- routing ---
         def _handle_webhook(self, name):
@@ -664,6 +786,13 @@ def make_handler(db_path: str, auth_token: Optional[str], require_auth: bool,
 
         def do_GET(self):
             path = self.path.split("?", 1)[0]
+            # Always-open routes: liveness probe and PWA assets must not
+            # require auth so that health-checkers and the service-worker
+            # install path work without a token.
+            _OPEN_PATHS = {"/healthz", "/health", "/manifest.json", "/sw.js"}
+            if path not in _OPEN_PATHS and not self._check_read_auth():
+                self._json(401, {"error": "unauthorized"})
+                return
             conn = _db.connect(db_path)
             try:
                 if path in ("/", "/runs", "/runs/"):
@@ -676,6 +805,7 @@ def make_handler(db_path: str, auth_token: Optional[str], require_auth: bool,
                         workflow=_first2("workflow"),
                         after=_first2("after"),
                         before=_first2("before"),
+                        mesh_info=_mesh.cached_status(),
                     )); return
                 if path in ("/workflows", "/workflows/"):
                     self._send(200, render_workflows(conn)); return
@@ -736,6 +866,30 @@ def make_handler(db_path: str, auth_token: Optional[str], require_auth: bool,
                 if m:
                     self._stream_run_events(int(m.group(1)))
                     return
+                # --- agent memory routes (read) ---
+                if path == "/api/agents":
+                    self._json(200, _agents.list_agents(conn)); return
+                m = _API_AGENT_META_RE.match(path)
+                if m:
+                    agent = _agents.get_agent(conn, m.group(1))
+                    if agent is None:
+                        self._json(404, {"error": "agent not found"})
+                    else:
+                        self._json(200, agent)
+                    return
+                m = _API_AGENT_ENTRIES_RE.match(path)
+                if m:
+                    entries = _agents.get_entries(conn, m.group(1))
+                    self._json(200, {"entries": entries, "count": len(entries)}); return
+                # --- API key list (admin only) ---
+                if path == "/api/keys":
+                    get_role = self._get_role()
+                    if get_role is None:
+                        self._json(401, {"error": "unauthorized"}); return
+                    if not _auth.role_is_admin(get_role):
+                        self._json(403, {"error": "admin role required"}); return
+                    keys = _auth.list_api_keys(conn)
+                    self._json(200, {"keys": keys, "count": len(keys)}); return
                 self._send(404, _page("not found", '<h1 class="text-xl font-semibold">404</h1>'))
             finally:
                 conn.close()
@@ -811,8 +965,12 @@ def make_handler(db_path: str, auth_token: Optional[str], require_auth: bool,
             if m:
                 self._handle_webhook(m.group(1))
                 return
-            if not self._check_auth():
+            _post_role = self._get_role()
+            if _post_role is None:
                 self._json(401, {"error": "unauthorized"})
+                return
+            if not _auth.role_can_write(_post_role):
+                self._json(403, {"error": "forbidden: insufficient role"})
                 return
             path = self.path.split("?", 1)[0]
             try:
@@ -877,6 +1035,105 @@ def make_handler(db_path: str, auth_token: Optional[str], require_auth: bool,
                         return
                     self._json(201, {"trigger_id": tid})
                     return
+                # --- agent memory routes (write) ---
+                m = _API_AGENT_META_RE.match(path)
+                if m:
+                    agent_name = m.group(1)
+                    if not isinstance(body, dict):
+                        self._json(400, {"error": "body must be a JSON object"})
+                        return
+                    goal = body.get("goal", "")
+                    tick = int(body.get("tick", 0))
+                    row = _agents.upsert_agent(conn, agent_name, goal, tick)
+                    self._json(200, row)
+                    return
+                m = _API_AGENT_ENTRIES_RE.match(path)
+                if m:
+                    agent_name = m.group(1)
+                    if not isinstance(body, dict):
+                        self._json(400, {"error": "body must be a JSON object"})
+                        return
+                    tick = body.get("tick")
+                    if tick is None:
+                        self._json(400, {"error": "body must include 'tick'"})
+                        return
+                    tick = int(tick)
+                    # Ensure the agent row exists; only create if it doesn't
+                    # already exist so we never clobber an existing goal.
+                    if _agents.get_agent(conn, agent_name) is None:
+                        _agents.upsert_agent(conn, agent_name,
+                                             body.get("goal", ""), tick)
+                    try:
+                        import sqlite3 as _sq3
+                        row_id = _agents.append_entry(conn, agent_name, tick, body)
+                    except _sq3.IntegrityError:
+                        self._json(409, {"error": f"tick {tick} already exists for agent {agent_name!r}"})
+                        return
+                    self._json(201, {"id": row_id, "agent_name": agent_name, "tick": tick})
+                    return
+                # --- API key management (admin only) ---
+                if path == "/api/keys":
+                    role = self._get_role()
+                    if role is None:
+                        self._json(401, {"error": "unauthorized"})
+                        return
+                    if not _auth.role_is_admin(role):
+                        self._json(403, {"error": "admin role required"})
+                        return
+                    if not isinstance(body, dict):
+                        self._json(400, {"error": "body must be a JSON object"})
+                        return
+                    name = (body.get("name") or "").strip()
+                    key_role = body.get("role", "")
+                    if not name:
+                        self._json(400, {"error": "body must include 'name'"})
+                        return
+                    if key_role not in _auth.ROLES:
+                        self._json(400, {"error": f"role must be one of {list(_auth.ROLES)}"})
+                        return
+                    try:
+                        key_id, raw_key = _auth.create_api_key(conn, name, key_role)
+                    except ValueError as e:
+                        self._json(400, {"error": str(e)})
+                        return
+                    except Exception as e:
+                        if "UNIQUE" in str(e):
+                            self._json(409, {"error": f"key name {name!r} already exists"})
+                        else:
+                            self._json(500, {"error": str(e)})
+                        return
+                    self._json(201, {
+                        "id": key_id, "name": name, "role": key_role,
+                        "key": raw_key,
+                        "note": "Store this key — it will not be shown again.",
+                    })
+                    return
+
+                self._json(404, {"error": "not found"})
+            finally:
+                conn.close()
+
+        def do_DELETE(self):
+            path = self.path.split("?", 1)[0]
+            role = self._get_role()
+            if role is None:
+                self._json(401, {"error": "unauthorized"})
+                return
+            if not _auth.role_is_admin(role):
+                self._json(403, {"error": "admin role required"})
+                return
+            conn = _db.connect(db_path)
+            try:
+                import re as _re
+                m = _re.match(r"^/api/keys/([^/]+)/?$", path)
+                if m:
+                    name_or_id = m.group(1)
+                    revoked = _auth.revoke_api_key(conn, name_or_id)
+                    if revoked:
+                        self._json(200, {"revoked": True, "key": name_or_id})
+                    else:
+                        self._json(404, {"error": f"key {name_or_id!r} not found or already revoked"})
+                    return
                 self._json(404, {"error": "not found"})
             finally:
                 conn.close()
@@ -885,14 +1142,22 @@ def make_handler(db_path: str, auth_token: Optional[str], require_auth: bool,
 
 
 def serve(db_path: str, host: str = "127.0.0.1", port: int = 8080,
-          auth_token: Optional[str] = None,
+          auth_token=None,
           insecure_no_auth: bool = False,
-          tls_cert: Optional[str] = None,
-          tls_key: Optional[str] = None) -> HTTPServer:
+          insecure_read_no_auth: bool = False,
+          tls_cert=None,
+          tls_key=None):
     """Boot the http server. Returns the server object (call serve_forever()).
 
     auth_token defaults to env var AUTOMATON_TOKEN.
-    If neither is set and insecure_no_auth is False, POST routes return 401.
+    If neither is set and insecure_no_auth is False, all routes return 401.
+
+    insecure_no_auth=True  -- disables auth on write AND read routes.
+    insecure_read_no_auth=True -- disables auth on read routes only; writes
+                                  still require the token. Useful for local
+                                  Prometheus scrapers that cannot send headers.
+
+                                  token while keeping the write API protected.
 
     Pass tls_cert and tls_key together to wrap the listening socket in TLS.
     Either both or neither - one without the other raises ValueError. When
@@ -901,10 +1166,15 @@ def serve(db_path: str, host: str = "127.0.0.1", port: int = 8080,
     if auth_token is None:
         auth_token = os.environ.get("AUTOMATON_TOKEN")
     require_auth = not insecure_no_auth
+    # require_read_auth is False when either --insecure-no-auth or
+    # --insecure-read-no-auth is passed.
+    require_read_auth = require_auth and not insecure_read_no_auth
     if require_auth and not auth_token:
         log.warning(
-            "no AUTOMATON_TOKEN set; POST routes will return 401. "
-            "Pass insecure_no_auth=True (or --insecure-no-auth) to allow writes."
+            "no AUTOMATON_TOKEN set and no api_keys exist; all routes will "
+            "return 401 until a key is created or AUTOMATON_TOKEN is set. "
+            "Pass insecure_no_auth=True (or --insecure-no-auth) to allow "
+            "unauthenticated access."
         )
     if (tls_cert is None) != (tls_key is None):
         raise ValueError(
@@ -913,7 +1183,9 @@ def serve(db_path: str, host: str = "127.0.0.1", port: int = 8080,
     tls_enabled = tls_cert is not None
     httpd = HTTPServer(
         (host, port),
-        make_handler(db_path, auth_token, require_auth, tls_enabled=tls_enabled),
+        make_handler(db_path, auth_token, require_auth,
+                     tls_enabled=tls_enabled,
+                     require_read_auth=require_read_auth),
     )
     if tls_enabled:
         import ssl
@@ -924,7 +1196,8 @@ def serve(db_path: str, host: str = "127.0.0.1", port: int = 8080,
         except (ssl.SSLError, FileNotFoundError, OSError) as e:
             httpd.server_close()
             raise ValueError(
-                f"could not load TLS cert/key ({tls_cert!r}, {tls_key!r}): {e}"
+                f"could not load TLS cert/key: {e}"
             ) from e
         httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+
     return httpd

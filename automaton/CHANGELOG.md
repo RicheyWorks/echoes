@@ -10,6 +10,154 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Multi-tenant API key auth** — replaces the single shared `AUTOMATON_TOKEN`
+  with a full role-based access model while keeping full backward compatibility:
+  - `automaton/migrations/0005-api-keys.sql` — `api_keys` table storing
+    `SHA-256(raw_key)` (never the plaintext), with `id`, `name`, `role`,
+    `active`, `created_at`, and `last_used_at` columns.
+  - `automaton/automaton/auth.py` — key lifecycle module: `generate_key`,
+    `hash_key`, `create_api_key`, `revoke_api_key`, `delete_api_key`,
+    `list_api_keys`, `authenticate`, and role helpers `role_can_read`,
+    `role_can_write`, `role_is_admin`.
+  - **Roles**: `admin` (full access, may manage keys), `operator` (all reads +
+    write routes), `viewer` (read routes only).
+  - **Key format**: `atk_<64 hex chars>` (32 random bytes); plaintext shown
+    exactly once at creation, never stored.
+  - **`_get_role()` in `ui.py`** — resolves any Bearer token to a role string:
+    checks `AUTOMATON_TOKEN` first (always "admin"), then DB lookup with
+    `touch_last_used`. POST handler now returns 403 (not 401) when the caller
+    is authenticated but lacks write permission.
+  - **Key management HTTP API** (admin-only):
+    - `GET  /api/keys`                — list all keys (no `key_hash` field)
+    - `POST /api/keys`                — create key; returns plaintext once
+    - `DELETE /api/keys/<name_or_id>` — revoke key
+  - **Key management CLI** (`automaton key`):
+    - `automaton key create <name> [--role operator|viewer|admin]`
+    - `automaton key list`
+    - `automaton key revoke <name_or_id>`
+  - `tests/test_multitenancy.py` — 37 integration tests covering all roles,
+    revoked/unknown tokens, `last_used_at` tracking, key API round-trips, and
+    401 vs 403 distinctions.
+
+---
+
+## [0.5.0] — 2026-05-26
+
+### Added
+- **Option C: automaton as `echoes` durable store** — automaton now acts as
+  a remote persistence backend for echoes agents running on any machine:
+  - `automaton/migrations/0004-agents.sql` — adds `agent` and `agent_memory`
+    tables with a `UNIQUE (agent_name, tick)` constraint and `ON DELETE CASCADE`
+    for clean agent removal.
+  - `automaton/automaton/agents.py` — six functions (`get_agent`,
+    `upsert_agent`, `append_entry`, `get_entries`, `list_agents`,
+    `delete_agent`) operating inside `db.transaction()` blocks for
+    atomicity.
+  - **Agent HTTP API** (`ui.py`) — five new routes authenticated with the
+    existing Bearer-token model:
+    - `GET  /api/agents` — list all agents (name, goal, tick, updated_at)
+    - `GET  /api/agents/<name>/meta` — one agent's metadata row
+    - `POST /api/agents/<name>/meta` — upsert agent row (`{goal, tick}`)
+    - `GET  /api/agents/<name>/entries` — all memory entries ordered by tick
+    - `POST /api/agents/<name>/entries` — append one entry; returns 409 on
+      duplicate tick
+  - **`AgentStore` trait in echoes** (`store.rs`) — both backends implement
+    `save_agent_meta`, `load_agent_meta`, `save_entry`, `load_entries`:
+    - `SqliteStore` (formerly `Store`) — unchanged local-first behaviour;
+      `pub type Store = SqliteStore` keeps existing call-sites working.
+    - `RemoteStore` — HTTP backend that POSTs entries to automaton's
+      `/api/agents/*` API via the `ureq` sync HTTP client (no async runtime
+      required).  Supports resume: `load_entries` fetches the existing chain
+      so `echoes run` continues from where it left off even on a different
+      machine.
+  - **`--remote-store URL --token TOKEN`** flags on `echoes run` — when
+    present, a `Box<dyn AgentStore>` is dispatched to `RemoteStore` instead
+    of the local SQLite file.  `--token` also reads `AUTOMATON_TOKEN` from
+    the environment.  The `verify` and `report` subcommands remain
+    SQLite-only (forensic integrity checks require local data).
+  - `tests/test_agents.py` — 26 HTTP-level tests covering CRUD lifecycle,
+    idempotent meta upsert, entry ordering, duplicate-tick 409, auth
+    enforcement on both GET and POST routes, and the full end-to-end
+    lifecycle.
+- **Real event sources in `echoes` (Phase 4c)** — `sensor.rs` adds:
+  - `EventSource` trait — non-blocking `poll() -> Option<SecurityEvent>`;
+    any implementor can be passed to `agent.think_with(Some(&mut source))`.
+  - `FileWatcher` — wraps the `notify` crate (inotify / kqueue /
+    ReadDirectoryChangesW) to emit `SecurityEvent::FileAccess` on real
+    filesystem activity. Enable with `--features watch`; without the feature
+    the binary compiles and runs normally with synthetic events.
+  - `ProcessScanner` — reads `/proc/<pid>/comm` (Linux) or `ps -eo pid,comm`
+    (macOS) each tick; emits `SecurityEvent::ProcessExecution` for any PID
+    seen since the last scan. No-op stub on other platforms.
+  - `CompositeSource` — chains multiple `EventSource` implementations;
+    returns the first event found on each `poll()`.
+  - `agent::Agent::think_with<S: EventSource>()` — generically-dispatched
+    variant of `think()`; `think()` delegates to it using `None` (zero-cost,
+    no behaviour change for existing callers).
+  - CLI flags `--watch PATH` and `--procs` on the `run` subcommand wire
+    the sources into the tick loop.
+  - `echoes.yml` GitHub Actions workflow — `cargo test` on Linux + macOS,
+    `cargo test --features watch`, `cargo clippy -D warnings`.
+- **Postgres backend (Phase 6)** — set `AUTOMATON_DB_URL=postgresql://...` to
+  run against Postgres instead of SQLite.  The new `automaton.pg` module
+  provides `PgConn`, a thin adapter that presents the same `conn.execute()`
+  interface as `sqlite3.Connection`: paramstyle, date functions, and
+  `lastrowid` are translated transparently so `engine.py` is unchanged.
+  Queue leasing uses `SELECT … FOR UPDATE SKIP LOCKED` for true multi-worker
+  concurrency without optimistic-lock retries.  Schema is applied by
+  `pg.migrate(conn)` — a single idempotent `CREATE TABLE IF NOT EXISTS` script
+  (no yoyo dependency on the Postgres path).  Install the extra:
+  `pip install 'automaton-engine[postgres]'`.
+- **`db.open_store(url)`** — routing factory that returns a `SQLiteConn` or
+  `PgConn` based on the URL prefix.  Falls back to `AUTOMATON_DB_URL` env var,
+  then `AUTOMATON_DB`, then `automaton.db`.
+- **`echoes_agent` step type** — built-in step that invokes the `echoes`
+  binary (auto-discovered from PATH or the sibling `echoes-v1.0-forensic/`
+  directory).  Supports `action: run | verify | report`.  Parses Merkle root,
+  tick count, and integrity status from output; stores structured JSON in the
+  step's `output_json`.
+- **`templates/agent/echoes-daily.yaml`** — workflow template for a daily
+  forensic agent run: advance → verify integrity → store JSON report.
+- **Tailscale reachability card in the UI** — the run-list homepage now shows
+  a compact "Connected to Tailscale" card when the daemon is running and logged
+  in. Displays the MagicDNS URL (e.g. `https://host.tailnet.ts.net`), Tailscale
+  IP, peer count, and a one-click copy button. Hidden automatically on
+  local-only deployments where Tailscale isn't installed.
+- **`automaton mesh status` quick-access section** — when Tailscale is healthy,
+  `automaton mesh status` now prints an "access URL" block with the browser URL
+  and the `tailscale serve` one-liner to enable HTTPS via Let's Encrypt.
+- **Startup URL hint in `automaton serve`** — if Tailscale is running at
+  startup, the serve command prints the Tailscale URL alongside the local one
+  so you can open it on your phone immediately.
+- **`mesh.cached_status()`** — 60-second TTL cache on the `tailscale status`
+  subprocess call, so the UI card adds zero latency on cache-warm requests.
+- **`deploy/mesh/README.md` Quick path** — new section at the top of the mesh
+  README with a three-command sequence to get HTTPS remote access in under five
+  minutes.
+
+### Security
+- **Read-route auth** — all GET routes (UI dashboard, `/api/*`, `/metrics`) now
+  require `Authorization: Bearer <AUTOMATON_TOKEN>` when `AUTOMATON_TOKEN` is
+  set. Previously only write (POST) routes were protected, making it unsafe to
+  expose the UI over a mesh network without a reverse proxy.  
+  **Always-open routes** (no token required): `/healthz`, `/health`,
+  `/manifest.json`, `/sw.js` — liveness checks and PWA assets continue to work
+  unauthenticated.  
+  **Browser bookmarks**: `?token=<TOKEN>` query-string fallback still works on
+  GET requests for bookmarking convenience; note it leaks the token into server
+  logs.  
+  **New flag `--insecure-read-no-auth`**: disables auth on read routes only
+  while keeping write routes protected — useful for local Prometheus scrapers
+  that can't send headers.  
+  **Migration**: if you scrape `/metrics` without a token, add
+  `--insecure-read-no-auth` to your `automaton serve` invocation, or set
+  `AUTOMATON_TOKEN` and configure your scraper to send the header.
+
+---
+
+## [0.4.0] — 2026-05-23
+
+### Added
 - **`python` step type** — execute any callable in a dotted module path
   (`module: my_package.tasks`, `function: process_data`). `print()` output
   is captured and stored in the step's output as `stdout`; the function's
@@ -104,93 +252,13 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
   `reap_timed_out_runs()` in the scheduler, `AUTOMATON_NOTIFY_ON_TIMEOUT`
   env var.
 - **Schema migrations** via yoyo-migrations — `automaton migrate` applies
-  SQL files in `automaton/migrations/`; `AUTOMATON_AUTO_MIGRATE` for
-  automatic startup migration.
-- **Time / timezone correctness** — per-cron `timezone:` field (IANA),
-  all next-fire timestamps stored as UTC, `croniter` DST-safe mode.
-- **Web UI mobile responsiveness + PWA shell** — Tailwind CDN, card +
-  table responsive layouts, `manifest.json`, service worker, SSE live
-  updates on run-detail, `?token=` query-string auth for browser use.
-- **Workflow templates library** (`templates/`) — 10 starter YAMLs
-  (backup, health, dev, infra, personal, agent-loop), `automaton init
-  --template` subcommand, `templates/INDEX.md`.
-- **Load tests** (`tests/load/`) — steady-state, burst, long-tail scripts;
-  `docs/scale.md` documents the measured operating envelope.
-- **Secrets management** — `automaton secret set/get/rm/ls/import`
-  subcommands backed by `keyring`; `${secret:NAME}` spec references.
-- **Notifications** — Apprise integration, `AUTOMATON_NOTIFY_ON_FAILURE`,
-  quiet hours, `automaton notify test` self-check.
-- **Backup and restore** — Litestream config template, `automaton restore`,
-  `PRAGMA integrity_check` on snapshot, CI restore drill.
-- **macOS host** (`deploy/macos/`) — launchd plists, install/uninstall
-  script, path conventions.
-- **Windows host** (`deploy/windows/`) — NSSM service wrapper, PowerShell
-  install script, path conventions.
-- **TLS** — `automaton serve --tls-cert --tls-key`, `automaton tls init`
-  self-signed cert helper, HSTS header.
-- **Mesh networking guide** (`deploy/mesh/`) — Tailscale + Headscale setup
-  for cross-device access.
-- **HTTP write API** — `POST /api/workflows`, `/api/trigger/NAME`,
-  `/api/crons`, `/api/signals`, `/api/cancel`. Bearer token auth.
-- **Structured logging** — JSON or text format; `AUTOMATON_LOG_FORMAT`,
-  `AUTOMATON_LOG_LEVEL`, `AUTOMATON_LOG_FILE`.
-- **Plugin step types** via entry points (`automaton.step_types`).
-- **Workflow signals** — `wait_for_signal` step type, `POST /api/signals`.
-- **Retry policy** — per-step `retry:` with `max` and `backoff`.
-- **Webhook trigger** — HMAC-signed receiver, `automaton webhook add`.
-- **Cancel** — `automaton cancel <run_id>`, `POST /api/cancel`.
-- **Prune** — `automaton prune --before DAYS`.
-
-### Changed
-- `automaton backup` now runs `PRAGMA integrity_check` and aborts on
-  corruption rather than silently copying a bad file.
+  all pending SQL files from `automaton/migrations/` in order.
 
 ---
 
-## [0.1.0] -- 2025-01-15
-
-### Added
-- Initial release.
-- SQLite state store with WAL mode, exactly-once step execution via
-  idempotency keys (`sha256(run_id + step_name + attempt)`).
-- Step types: `shell`, `http_get`, `file_append`, `python`.
-- Cron scheduler with single-leader election via DB row lock.
-- Worker with lease-based queue, crash recovery, configurable timeout.
-- `automaton` CLI: `register`, `trigger`, `worker`, `scheduler`, `serve`,
-  `inspect`, `schedule`, `backup`.
-- Web dashboard -- runs list, run detail, workflows list, cron list.
-- Bearer token auth on write routes; `/healthz` open.
-- 68 tests.
-
-[Unreleased]: https://github.com/RicheyWorks/echoes/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/RicheyWorks/echoes/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/RicheyWorks/echoes/compare/v0.1.0...v0.2.0
-[0.1.0]: https://github.com/RicheyWorks/echoes/releases/tag/v0.1.0
-- **`when:` conditional step execution** — any step can carry a `when:` field
-  (a string, optionally templated). The condition is evaluated after all
-  `needs` complete: if falsy (`"false"`, `"0"`, `""`, `"no"`, `"off"`, or a
-  resolved value of `0`/`None`/`False`) the step is marked `skipped` and
-  downstream steps are still queued. Skipped steps do not fail the run.
-  Supports `${{ steps.<name>.output.<key> }}` and `${{ steps.<name>.status }}`
-  references so conditional logic is driven by real upstream results.
-- **`automaton run <spec.yaml>`** — one-shot local execution: registers the
-  workflow, triggers a run, drains the worker, prints a formatted step
-  summary, and exits with code `0` (completed) or `1` (failed / timed-out /
-  cancelled). Accepts `--payload JSON` and `--timeout N` (seconds; 0 = no
-  limit). Designed for use in shell scripts and CI pipelines without a
-  running server.
-- **Workflow required inputs (`inputs:` field)** — declare required
-  trigger-payload keys in the spec. `trigger_run` raises `ValueError` with
-  a clear message listing missing keys before creating the run, preventing
-  cryptic mid-run template errors. Empty lists and absent `inputs:` fields
-  are treated as no requirements. `automaton run` surfaces missing-input
-  errors and exits 1.
-- **`env:` dict on shell steps validated** — `validate_spec` now enforces
-  that `env:` is a string-keyed, string-valued dict. Template references
-  (`${{ run.payload.key }}`, `${{ secret:NAME }}`) are accepted as values
-  and are resolved before the subprocess launches.
-- **`automaton validate <spec.yaml>`** — validates a workflow YAML file
-  without registering it: parses YAML, runs `validate_spec` (name, steps,
-  needs, cycles, `when:`, `env:`, `inputs:`), prints a one-line summary on
-  success, and exits 0 (valid) or 1 (invalid). Designed for pre-commit hooks
-  and CI lint jobs.
+<!-- version comparison links (Keep a Changelog convention) -->
+[Unreleased]: https://github.com/richmond/echoes/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/richmond/echoes/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/richmond/echoes/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/richmond/echoes/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/richmond/echoes/releases/tag/v0.2.0

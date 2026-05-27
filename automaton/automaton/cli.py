@@ -21,6 +21,7 @@ from . import migrate as _mig
 from . import tls as _tls
 from . import mesh as _mesh
 from . import secrets as _secrets
+from . import auth as _auth
 from . import notify as _notify
 from . import templates as _templates
 
@@ -147,6 +148,20 @@ def cmd_run(args):
 
     _print_run_summary(detail)
     return 0 if run_status == "completed" else 1
+
+
+def cmd_doctor(args):
+    """Run health checks and print a diagnostic report."""
+    conn = _open()
+    results = engine.doctor(conn)
+    icons = {"ok": "✓", "warn": "!", "fail": "✗"}
+    any_fail = False
+    for r in results:
+        icon = icons.get(r["status"], "?")
+        print(f"  {icon}  {r['check']:<26}  {r['detail']}")
+        if r["status"] == "fail":
+            any_fail = True
+    return 1 if any_fail else 0
 
 
 def cmd_validate(args):
@@ -441,6 +456,49 @@ def cmd_migrate(args):
 
 
 
+def cmd_key_create(args):
+    conn = _open()
+    try:
+        key_id, raw_key = _auth.create_api_key(conn, args.name, args.role)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    except Exception as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(f"created API key  id={key_id}  name={args.name!r}  role={args.role}")
+    print()
+    print("KEY (shown only once — store this securely):")
+    print(f"  {raw_key}")
+    return 0
+
+
+def cmd_key_list(args):
+    conn = _open()
+    rows = _auth.list_api_keys(conn)
+    if not rows:
+        print("(no API keys)")
+        return 0
+    fmt = "  {:<16}  {:<24}  {:<10}  {:<6}  {:<25}  {}"
+    print(fmt.format("id", "name", "role", "active", "created_at", "last_used_at"))
+    print("  " + "-" * 100)
+    for r in rows:
+        active_str = "yes" if r["active"] else "no"
+        last = r["last_used_at"] or "(never)"
+        print(fmt.format(r["id"], r["name"], r["role"], active_str, r["created_at"], last))
+    return 0
+
+
+def cmd_key_revoke(args):
+    conn = _open()
+    ok = _auth.revoke_api_key(conn, args.name_or_id)
+    if ok:
+        print(f"revoked API key {args.name_or_id!r}")
+        return 0
+    print(f"no active API key found for {args.name_or_id!r}", file=sys.stderr)
+    return 1
+
+
 def cmd_tls_init(args):
     """Generate a self-signed TLS cert + key under args.out_dir."""
     try:
@@ -661,6 +719,19 @@ def cmd_mesh_status(args):
         for n in info["notes"]:
             print(f"  - {n}")
 
+    # Quick-access URL — most useful thing to know when setting up remote access
+    if info["logged_in"]:
+        magic = info.get("magic_dns")
+        ip = info["ips"][0] if info.get("ips") else None
+        ts_url = f"https://{magic}" if magic else (f"http://{ip}:{args.port}" if ip else None)
+        if ts_url:
+            print()
+            print("access URL:")
+            line("open in browser", ts_url)
+            if magic:
+                line("enable HTTPS",
+                     f"tailscale serve https / http://localhost:{args.port} --bg")
+
     # Local engine reachability check
     print()
     print("engine:")
@@ -687,6 +758,7 @@ def cmd_serve(args):
             host=args.host,
             port=args.port,
             insecure_no_auth=args.insecure_no_auth,
+            insecure_read_no_auth=args.insecure_read_no_auth,
             tls_cert=args.tls_cert,
             tls_key=args.tls_key,
         )
@@ -694,8 +766,31 @@ def cmd_serve(args):
         print(f"error: {e}", file=sys.stderr)
         return 1
     scheme = "https" if args.tls_cert else "http"
-    auth_note = " (insecure: write API open)" if args.insecure_no_auth else ""
+    if args.insecure_no_auth:
+        auth_note = " (insecure: all routes open)"
+    elif args.insecure_read_no_auth:
+        auth_note = " (insecure: read routes open, writes protected)"
+    else:
+        auth_note = ""
     print(f"automaton ui on {scheme}://{args.host}:{args.port}/{auth_note}  (ctrl-c to stop)")
+
+    # Surface the Tailscale reachability URL so the user can open the UI
+    # from their phone or laptop without looking up the IP manually.
+    try:
+        mesh_info = _mesh.cached_status()
+        if mesh_info.get("logged_in"):
+            magic = mesh_info.get("magic_dns")
+            ip = mesh_info["ips"][0] if mesh_info.get("ips") else None
+            ts_url = f"https://{magic}" if magic else (f"http://{ip}:{args.port}" if ip else None)
+            if ts_url:
+                print(f"  on tailnet:  {ts_url}")
+                if magic:
+                    print("  (run `tailscale serve https / http://localhost:{} --bg` "
+                          "to get a valid cert)".format(args.port))
+        elif mesh_info.get("installed"):
+            print("  tailscale:   installed but not logged in — run: tailscale up")
+    except Exception:
+        pass  # never let mesh check crash the serve command
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -822,7 +917,10 @@ def main(argv=None):
     p_serve.add_argument("--host", default="127.0.0.1")
     p_serve.add_argument("--port", type=int, default=8080)
     p_serve.add_argument("--insecure-no-auth", action="store_true",
-                         help="disable bearer-token auth on POST routes (DEV ONLY)")
+                         help="disable bearer-token auth on ALL routes (DEV ONLY)")
+    p_serve.add_argument("--insecure-read-no-auth", action="store_true",
+                         help="disable bearer-token auth on GET/read routes only; "
+                              "writes remain protected (useful for local Prometheus scraping)")
     p_serve.add_argument("--tls-cert", default=None,
                          help="path to a PEM-encoded TLS certificate")
     p_serve.add_argument("--tls-key", default=None,
@@ -884,48 +982,55 @@ def main(argv=None):
     p_sec_imp.add_argument("file")
     p_sec_imp.set_defaults(func=cmd_secret_import)
 
-    p_not = sub.add_parser("notify", help="notifications (Apprise-based)")
+    p_not = sub.add_parser("notify", help="send a notification")
     not_sub = p_not.add_subparsers(dest="notify_cmd", required=True)
-    p_not_test = not_sub.add_parser(
-        "test",
-        help="send a hello message to every configured channel (bypasses quiet hours)",
-    )
+    p_not_test = not_sub.add_parser("test", help="send a test notification")
     p_not_test.set_defaults(func=cmd_notify_test)
 
-    p_init = sub.add_parser(
-        "init",
-        help="scaffold a workflow YAML from a built-in template",
-    )
-    p_init.add_argument("name", nargs="?", default=None,
-                          help="output filename (.yaml appended if missing)")
-    p_init.add_argument("--template",
-                          help="template slug (e.g. 'health/website-up'). "
-                               "Omit to list available templates.")
-    p_init.add_argument("--list", action="store_true",
-                          help="list available templates and exit")
-    p_init.set_defaults(func=cmd_init)
+    p_doc = sub.add_parser("doctor", help="run health checks")
+    p_doc.set_defaults(func=cmd_doctor)
 
-    p_val = sub.add_parser(
-        "validate",
-        help="validate a workflow YAML file without registering it",
-    )
-    p_val.add_argument("spec_file", help="path to workflow YAML file")
+    p_val = sub.add_parser("validate", help="validate a workflow YAML")
+    p_val.add_argument("spec_file")
     p_val.set_defaults(func=cmd_validate)
 
-    p_run = sub.add_parser(
-        "run",
-        help="one-shot: register, trigger, run worker, print results, exit 0/1",
-    )
-    p_run.add_argument("spec_file", help="path to workflow YAML file")
-    p_run.add_argument("--payload", default=None,
-                        help="JSON object to use as the trigger payload")
-    p_run.add_argument("--timeout", type=int, default=0,
-                        help="wall-clock timeout in seconds (0 = no limit)")
+    p_run = sub.add_parser("run", help="one-shot local workflow execution")
+    p_run.add_argument("spec_file")
+    p_run.add_argument("--payload", default=None)
+    p_run.add_argument("--timeout", type=float, default=0)
     p_run.set_defaults(func=cmd_run)
 
+    p_init = sub.add_parser("init", help="create a workflow from a template")
+    p_init.add_argument("name", nargs="?", default=None)
+    p_init.add_argument("--template", default=None)
+    p_init.add_argument("--list", action="store_true")
+    p_init.set_defaults(func=cmd_init)
+
+    # --- key management ---
+    p_key = sub.add_parser("key", help="manage API keys for multi-tenant access")
+    key_sub = p_key.add_subparsers(dest="key_cmd", required=True)
+
+    p_key_create = key_sub.add_parser("create", help="create a new API key (printed once)")
+    p_key_create.add_argument("name", help="human label for this key")
+    p_key_create.add_argument(
+        "--role", default="operator",
+        choices=list(_auth.ROLES),
+        help="access role: admin | operator | viewer  (default: operator)",
+    )
+    p_key_create.set_defaults(func=cmd_key_create)
+
+    p_key_list = key_sub.add_parser("list", help="list all API keys")
+    p_key_list.set_defaults(func=cmd_key_list)
+
+    p_key_revoke = key_sub.add_parser("revoke", help="deactivate an API key by name or id")
+    p_key_revoke.add_argument("name_or_id", help="key name or id (key_XXXXXXXX)")
+    p_key_revoke.set_defaults(func=cmd_key_revoke)
+
     args = p.parse_args(argv)
-    if not hasattr(args, "func"):
-        p.print_help()
-        raise SystemExit(1)
     rc = args.func(args)
-    raise SystemExit(rc if isinstance(rc, int) else 0)
+    if rc is not None:
+        raise SystemExit(rc)
+
+
+if __name__ == "__main__":
+    main()
