@@ -25,3 +25,8 @@ wasm-bindgen-test = "0.3"
 # Minimize .wasm size
 opt-level = "s"
 lto = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# Source of truth for the native parity guard; target-gated so it never enters
+# the wasm build or `wasm-pack test`.
+echoes = { path = "../echoes" }

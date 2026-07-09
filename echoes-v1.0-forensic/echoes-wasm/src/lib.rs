@@ -429,3 +429,67 @@ mod tests {
         assert!(result.is_null());
     }
 }
+
+
+// ============================================================
+// Cross-crate parity guard (native `cargo test`)
+//
+// Ensures this crate's JSON-based reimplementation stays byte-for-byte
+// compatible with the canonical `echoes` agent core, using the real `echoes`
+// crate as the source of truth. Runs under plain `cargo test`; the
+// #[wasm_bindgen_test] tests above run separately under wasm-pack.
+// ============================================================
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod parity_tests {
+    use super::*;
+    use echoes::agent::{Agent, SecurityEvent};
+
+    // event_debug(JSON) must equal agent.rs's format!("{:?}", event) for every
+    // SecurityEvent variant — that string is hashed, so drift breaks verify.
+    #[test]
+    fn event_debug_matches_agent_debug() {
+        let cases = [
+            SecurityEvent::Custom("environment scan performed".to_string()),
+            SecurityEvent::NetworkConnection { src: "10.0.0.2".to_string(), dst: "1.1.1.1".to_string(), port: 443 },
+            SecurityEvent::FileAccess { path: "/etc/shadow".to_string(), operation: "read".to_string() },
+            SecurityEvent::Authentication { user: "root".to_string(), success: false },
+            SecurityEvent::ProcessExecution { name: "sshd".to_string(), pid: 4242 },
+        ];
+        for ev in &cases {
+            let json = serde_json::to_value(ev).unwrap();
+            assert_eq!(event_debug(&json), format!("{:?}", ev), "event_debug drift for {:?}", ev);
+        }
+    }
+
+    // A chain built by the real agent must recompute + Merkle-root identically
+    // through this crate's JSON path.
+    #[test]
+    fn wasm_recompute_matches_agent_chain() {
+        let mut agent = Agent::new("Parity", "cross-crate parity check");
+        for _ in 0..6 { agent.think(); }
+
+        // Per-entry hash + prev_hash linkage parity.
+        let mut prev: Hash = [0u8; 32];
+        for e in &agent.memory {
+            let action = format!("{:?}", e.action);
+            let event = serde_json::to_value(&e.event).unwrap();
+            assert_eq!(prev, e.prev_hash, "prev_hash mismatch at tick {}", e.tick);
+            assert_eq!(recompute_hash(&prev, e.tick, &action, &event, &e.note), e.hash,
+                       "hash recompute drift at tick {}", e.tick);
+            prev = e.hash;
+        }
+
+        // Merkle-root parity via leaf_hash + build_merkle_root.
+        let leaves: Vec<Hash> = agent.memory.iter().map(|e| {
+            leaf_hash(&Entry {
+                tick: e.tick,
+                action: format!("{:?}", e.action),
+                event: serde_json::to_value(&e.event).unwrap(),
+                note: e.note.clone(),
+                hash: to_hex(&e.hash),
+                prev_hash: to_hex(&e.prev_hash),
+            })
+        }).collect();
+        assert_eq!(build_merkle_root(&leaves), agent.merkle_root(), "merkle root drift");
+    }
+}
