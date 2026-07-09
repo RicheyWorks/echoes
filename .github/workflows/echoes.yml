@@ -134,7 +134,7 @@ jobs:
           restore-keys: cargo-clippy-${{ runner.os }}-
 
       - name: cargo clippy (default features)
-        run: cargo clippy --locked -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
 
       - name: cargo clippy (watch feature)
-        run: cargo clippy --locked --features watch -- -D warnings
+        run: cargo clippy --locked --all-targets --features watch -- -D warnings
