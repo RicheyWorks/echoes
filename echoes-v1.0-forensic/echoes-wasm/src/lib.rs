@@ -255,10 +255,10 @@ pub fn generate_proof(entries_json: &str, index: usize) -> Result<JsValue, JsErr
     let mut idx        = index;
 
     while level.len() > 1 {
-        let sib_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
+        let sib_idx = if idx.is_multiple_of(2) { idx + 1 } else { idx - 1 };
         let sibling = if sib_idx < level.len() { level[sib_idx] } else { level[idx] };
         siblings.push(to_hex(&sibling));
-        directions.push(idx % 2 == 0); // true = we are on the left
+        directions.push(idx.is_multiple_of(2)); // true = we are on the left
 
         let mut next = Vec::new();
         let mut i = 0;
@@ -355,7 +355,7 @@ mod tests {
 
     #[wasm_bindgen_test]
     fn test_verify_chain_empty() {
-        assert_eq!(verify_chain("[]").unwrap(), true);
+        assert!(verify_chain("[]").unwrap());
     }
 
     #[wasm_bindgen_test]
@@ -363,7 +363,7 @@ mod tests {
         let zero_hex = "0".repeat(64);
         let (json, _) = make_entry_json(1, &zero_hex);
         let arr = format!("[{}]", json);
-        assert_eq!(verify_chain(&arr).unwrap(), true);
+        assert!(verify_chain(&arr).unwrap());
     }
 
     #[wasm_bindgen_test]
@@ -373,7 +373,7 @@ mod tests {
         let (e2, h2) = make_entry_json(2, &h1);
         let (e3, _)  = make_entry_json(3, &h2);
         let arr = format!("[{},{},{}]", e1, e2, e3);
-        assert_eq!(verify_chain(&arr).unwrap(), true);
+        assert!(verify_chain(&arr).unwrap());
     }
 
     #[wasm_bindgen_test]
@@ -384,7 +384,7 @@ mod tests {
         // Corrupt e1 by changing the note without recomputing hash
         let e1_tampered = e1.replace("test note", "tampered note");
         let arr = format!("[{},{}]", e1_tampered, e2);
-        assert_eq!(verify_chain(&arr).unwrap(), false);
+        assert!(!verify_chain(&arr).unwrap());
     }
 
     #[wasm_bindgen_test]

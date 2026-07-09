@@ -44,7 +44,9 @@ except ModuleNotFoundError:
     yaml = None  # type: ignore[assignment]
 
 ROOT       = Path(__file__).parent.parent
-WORKFLOWS  = ROOT / ".github" / "workflows"
+# Workflows live at the *repository* root (automaton/ is a sub-project);
+# GitHub Actions only runs workflows from the repo-root .github/workflows/.
+WORKFLOWS  = ROOT.parent / ".github" / "workflows"
 TEST_WF    = WORKFLOWS / "test.yml"
 DOCS_WF    = WORKFLOWS / "docs.yml"
 RELEASE_WF = WORKFLOWS / "release.yml"
