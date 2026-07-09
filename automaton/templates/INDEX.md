@@ -8,6 +8,7 @@ Each template ships with a comment block explaining what it does, what secrets/e
 ## agent
 
 - **`agent/claude-loop`** — Starts a task, pauses with wait_for_signal, then records the result once a human (or external agent) resume...
+- **`agent/echoes-daily`** — Advances the Echo agent by a configurable number of ticks, then immediately verifies hash-chain integrity a...
 
 ## backup
 

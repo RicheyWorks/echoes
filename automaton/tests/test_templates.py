@@ -27,6 +27,7 @@ from automaton.engine import validate_spec
 TEMPLATES_ROOT = _templates.TEMPLATES_ROOT
 EXPECTED_SLUGS = {
     "agent/claude-loop",
+    "agent/echoes-daily",
     "backup/home-folder",
     "dev/docker-prune",
     "dev/git-mirror",
@@ -46,7 +47,7 @@ EXPECTED_SLUGS = {
 class TestDiscover:
     def test_finds_all_ten_templates(self):
         metas = _templates.discover()
-        assert len(metas) == 10
+        assert len(metas) == 11
 
     def test_slugs_match_expected_set(self):
         slugs = {m.slug for m in _templates.discover()}
@@ -234,6 +235,6 @@ class TestIndex:
         expected = _templates.render_index()
         assert on_disk == expected, (
             "templates/INDEX.md is stale. Regenerate with:\n"
-            "  python3 -c 'from automaton.templates import render_index; "
+            "    python3 -c 'from automaton.templates import render_index; "
             "print(render_index())' > templates/INDEX.md"
         )

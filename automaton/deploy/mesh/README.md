@@ -1,5 +1,29 @@
 # Reaching automaton from outside your LAN
 
+## Quick path (< 5 minutes if Tailscale is already installed)
+
+```bash
+# 1. Start automaton with auth on
+AUTOMATON_TOKEN=<your-token> automaton serve
+
+# 2. In another terminal — expose it through Tailscale Serve (free Let's Encrypt cert)
+tailscale serve https / http://localhost:8080 --bg
+
+# 3. Find your URL and verify
+automaton mesh status
+# → prints something like:
+#   access URL:
+#     open in browser   https://your-host.your-tailnet.ts.net
+```
+
+Open that URL on your phone. It loads over HTTPS with a real cert, protected
+by your `AUTOMATON_TOKEN`. Done.
+
+The rest of this document explains the options in more depth and how to set up
+Tailscale from scratch.
+
+---
+
 `automaton serve` listens on `127.0.0.1:8080` by default. That keeps it
 safe on a multi-user box, but it also means your phone on cellular can't
 hit it. There are three ways to fix that, ranked by how much your

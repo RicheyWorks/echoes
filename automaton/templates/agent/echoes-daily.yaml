@@ -1,0 +1,40 @@
+# Forensic agent daily run + integrity verification using echoes.
+# Description: Advances the Echo agent by a configurable number of ticks,
+#   then immediately verifies hash-chain integrity and stores a full JSON
+#   memory report. Fails the run if the chain is tampered or corrupt.
+#   Run `echoes report --db echoes.db --json` at any time to inspect history.
+# Required secrets: none
+# Required env: ECHOES_DB (path to echoes SQLite DB, default: echoes.db)
+#               ECHOES_BINARY (path to echoes binary, optional -- auto-discovered)
+#               ECHOES_TICKS  (ticks per run, optional -- default 8)
+# Cron: 0 6 * * *   (daily at 06:00)
+# Last verified: 2026-05-26
+
+name: echoes-daily
+
+steps:
+  # Step 1 -- advance the agent
+  - name: run_agent
+    type: echoes_agent
+    action: run
+    db: "${{ env.ECHOES_DB | default('echoes.db') }}"
+    ticks: "${{ env.ECHOES_TICKS | default(8) }}"
+    agent_name: Echo
+    goal: "map environment with cryptographic memory"
+    binary: "${{ env.ECHOES_BINARY | default('') }}"
+
+  # Step 2 -- assert the chain is still intact
+  - name: verify_integrity
+    type: echoes_agent
+    needs: [run_agent]
+    action: verify
+    db: "${{ env.ECHOES_DB | default('echoes.db') }}"
+    agent_name: Echo
+
+  # Step 3 -- pull the full JSON report and store it as step output
+  - name: memory_report
+    type: echoes_agent
+    needs: [verify_integrity]
+    action: report
+    db: "${{ env.ECHOES_DB | default('echoes.db') }}"
+    agent_name: Echo

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Allow cleartext (HTTP) traffic to local/private IP ranges and .local
+    hostnames so users can reach automaton on their home network without TLS.
+    Traffic to public hosts still requires HTTPS.
+
+    For self-signed TLS certs, add the server's certificate as a trust anchor
+    in Settings and automaton will pin it via OkHttp's CertificatePinner.
+-->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <!-- RFC-1918 private ranges -->
+        <domain includeSubdomains="true">10.0.0.0/8</domain>
+        <domain includeSubdomains="true">172.16.0.0/12</domain>
+        <domain includeSubdomains="true">192.168.0.0/16</domain>
+        <!-- mDNS / Tailscale MagicDNS -->
+        <domain includeSubdomains="true">local</domain>
+        <domain includeSubdomains="true">ts.net</domain>
+        <!-- loopback -->
+        <domain includeSubdomains="true">localhost</domain>
+    </domain-config>
+</network-security-config>

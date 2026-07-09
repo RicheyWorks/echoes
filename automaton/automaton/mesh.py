@@ -18,7 +18,29 @@ import json
 import shutil
 import socket
 import subprocess
+import threading
+import time
 from typing import Optional
+
+# ---------------------------------------------------------------------------
+# TTL cache — avoids hitting the tailscale CLI on every HTTP request.
+# The status changes only when the daemon is restarted or the network changes,
+# so a 60-second window is more than fresh enough for the UI card.
+# ---------------------------------------------------------------------------
+_cache_lock = threading.Lock()
+_cache_value: Optional[dict] = None
+_cache_ts: float = 0.0
+_CACHE_TTL = 60.0  # seconds
+
+
+def cached_status(ttl: float = _CACHE_TTL) -> dict:
+    """Return mesh status, refreshing at most once per ``ttl`` seconds."""
+    global _cache_value, _cache_ts
+    with _cache_lock:
+        if _cache_value is None or (time.monotonic() - _cache_ts) > ttl:
+            _cache_value = status()
+            _cache_ts = time.monotonic()
+        return dict(_cache_value)
 
 
 def _which_tailscale() -> Optional[str]:

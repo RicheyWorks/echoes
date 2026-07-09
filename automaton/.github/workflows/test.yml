@@ -73,6 +73,45 @@ jobs:
       - name: Twine check
         working-directory: automaton
         run: twine c
+  postgres:
+    name: Postgres backend (Ubuntu, py3.11)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: automaton
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: automaton
+          POSTGRES_PASSWORD: automaton
+          POSTGRES_DB: automaton_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U automaton"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package + psycopg3 + pytest
+        run: pip install -e ".[tls,secrets-headless,postgres]" pytest
+
+      - name: Run Postgres tests
+        env:
+          AUTOMATON_TEST_PG_URL: postgresql://automaton:automaton@localhost:5432/automaton_test
+        run: pytest tests/test_postgres.py -v --tb=short
+
   validate-templates:
     name: Validate workflow templates
     runs-on: ubuntu-latest

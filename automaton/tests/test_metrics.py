@@ -216,14 +216,18 @@ def test_metrics_route_returns_200(tmp_path):
     assert "automaton_runs_total" in body
 
 
-def test_metrics_requires_no_auth(tmp_path):
-    """Unlike write routes, /metrics must be accessible without a token."""
+def test_metrics_requires_auth_by_default(tmp_path):
+    """Since v0.4.0, /metrics requires a token when AUTOMATON_TOKEN is set.
+    Use --insecure-read-no-auth (require_read_auth=False) to open it for
+    unauthenticated Prometheus scrapers."""
     db_path = str(tmp_path / "ui.db")
     conn = _db.connect(db_path)
     _db.migrate(conn)
     conn.close()
 
     from automaton.ui import make_handler
+
+    # Default: token required on reads → 401 without header.
     Handler = make_handler(db_path, auth_token="secret",
                            require_auth=True, tls_enabled=False)
 
@@ -252,5 +256,66 @@ def test_metrics_requires_no_auth(tmp_path):
 
     h = Harness()
     h.do_GET()
-    assert h._response_code == 200, \
-        f"/metrics returned {h._response_code} — should be open like /healthz"
+    assert h._response_code == 401, \
+        f"/metrics returned {h._response_code} — should require auth by default"
+
+    # With require_read_auth=False: open for Prometheus scrapers.
+    Handler2 = make_handler(db_path, auth_token='secret',
+                            require_auth=True, tls_enabled=False,
+                            require_read_auth=False)
+
+    class Harness2(Handler2):
+        def __init__(self):
+            self.path = '/metrics'
+            self.command = 'GET'
+            self.headers = {}
+            self._response_code = None
+            self._body = b''
+        def send_response(self, code, msg=None):
+            self._response_code = code
+        def send_header(self, *a): pass
+        def end_headers(self): pass
+        @property
+        def wfile(self):
+            outer = self
+            class W:
+                def write(self, data): outer._body += data
+            return W()
+
+    h2 = Harness2()
+    h2.do_GET()
+    assert h2._response_code == 200, '/metrics should be open when require_read_auth=False'
+
+
+def test_metrics_requires_no_auth(tmp_path):
+    db_path = str(tmp_path / 'ui.db')
+    conn = _db.connect(db_path)
+    _db.migrate(conn)
+    conn.close()
+    from automaton.ui import make_handler
+    Handler = make_handler(db_path, auth_token='secret',
+                           require_auth=True, tls_enabled=False,
+                           require_read_auth=False)
+    class Harness(Handler):
+        def __init__(self):
+            self.path = '/metrics'
+            self.command = 'GET'
+            self.headers = {}
+            self._response_code = None
+            self._body = b''
+        def send_response(self, code, msg=None):
+            self._response_code = code
+        def send_header(self, *a): pass
+        def end_headers(self): pass
+        @property
+        def wfile(self):
+            outer = self
+            class W:
+                def write(self, data): outer._body += data
+            return W()
+    h = Harness()
+    h.do_GET()
+    assert h._response_code == 200, (
+        '/metrics returned 401 -- should be open like /healthz '
+        'when require_read_auth=False (--insecure-read-no-auth)'
+    )

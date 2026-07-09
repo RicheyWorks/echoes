@@ -5,6 +5,14 @@ Schema is owned by ``automaton/migrations/`` and applied via yoyo. See
 as a backward-compatible entry point for callers that already have a
 connection - it derives the underlying file path from the connection and
 hands off to the yoyo-backed wrapper.
+
+Postgres support
+----------------
+Set the ``AUTOMATON_DB_URL`` environment variable to a ``postgresql://`` DSN
+to switch the engine to Postgres.  ``open_store()`` returns the appropriate
+connection type; callers receive either a ``sqlite3.Connection`` (SQLite) or a
+``automaton.pg.PgConn`` (Postgres) — both present the same ``.execute()``
+interface so ``engine.py`` is backend-agnostic.
 """
 from __future__ import annotations
 
@@ -13,7 +21,7 @@ import os
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Union
 
 # Kept for backward compat - some tests reference this. The canonical
 # schema source today is automaton/migrations/0001-initial.sql.
@@ -103,7 +111,12 @@ def migrate(conn):
 
 @contextmanager
 def transaction(conn):
-    """Wrap a block of statements in BEGIN IMMEDIATE ... COMMIT."""
+    """Wrap a block of statements in BEGIN [IMMEDIATE] ... COMMIT.
+
+    For SQLite connections issues ``BEGIN IMMEDIATE`` (write-ahead mode).
+    For Postgres ``PgConn`` the wrapper translates ``BEGIN IMMEDIATE`` to
+    ``BEGIN`` automatically, so no special-casing is needed here.
+    """
     conn.execute("BEGIN IMMEDIATE")
     try:
         yield conn
@@ -120,3 +133,33 @@ def to_json(value):
 
 def from_json(value):
     return None if value is None else json.loads(value)
+
+
+# ---------------------------------------------------------------------------
+# Multi-backend factory
+# ---------------------------------------------------------------------------
+
+def open_store(db_url: str = ""):
+    """Return a connection to the configured backend.
+
+    If *db_url* starts with ``postgresql://`` (or is empty and
+    ``AUTOMATON_DB_URL`` in the environment starts with ``postgresql://``),
+    a Postgres ``PgConn`` is returned.  Otherwise ``connect()`` is called
+    and a SQLite connection returned.
+
+    Callers are responsible for calling ``migrate()`` or ``pg.migrate()``
+    on the returned connection before first use.
+
+    Example::
+
+        conn = open_store()                           # AUTOMATON_DB_URL or automaton.db
+        conn = open_store("automaton.db")
+        conn = open_store("postgresql://user:pw@host/db")
+    """
+    url = db_url or os.environ.get("AUTOMATON_DB_URL", "")
+    if url.startswith("postgresql://") or url.startswith("postgres://"):
+        from . import pg as _pg
+        return _pg.connect(url)
+    # Fall back to SQLite; treat the url as a file path (or use the default).
+    path = url or os.environ.get("AUTOMATON_DB", "automaton.db")
+    return connect(path)

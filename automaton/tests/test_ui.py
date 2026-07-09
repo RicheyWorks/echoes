@@ -34,7 +34,7 @@ def server(tmp_path):
     conn.close()
     port = _free_port()
     httpd = _ui.serve(str(db_path), host="127.0.0.1", port=port,
-                       auth_token="testtoken")
+                       auth_token="testtoken", insecure_read_no_auth=True)
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
     yield f"127.0.0.1:{port}", str(db_path)

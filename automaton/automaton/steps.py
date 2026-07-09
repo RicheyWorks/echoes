@@ -482,3 +482,185 @@ def _foreach(spec, idempotency_key, context=None):
         )
 
     return {"results": results, "count": len(items), "failed": failed}
+
+
+# ============================================================
+# echoes_agent step type
+# ============================================================
+
+@step_type("echoes_agent")
+def _echoes_agent(spec, idempotency_key):
+    """Drive an echoes forensic agent as a workflow step.
+
+    Shells out to the ``echoes`` binary (must be on PATH or set via ``binary``).
+    Three actions mirror the three CLI subcommands:
+
+    * ``run``    — advance the agent by N ticks, persisting every entry.
+    * ``verify`` — reload from DB and assert hash-chain integrity.
+    * ``report`` — return the full JSON memory dump as structured step output.
+
+    spec fields
+    -----------
+    action  : 'run' | 'verify' | 'report'  (default: 'run')
+    db      : path to the echoes SQLite DB  (default: 'echoes.db')
+    name    : agent name                    (default: 'Echo')
+    goal    : agent goal string             (default: 'map environment with cryptographic memory')
+    ticks   : ticks to run (run only)       (default: 8)
+    binary  : path to echoes binary         (default: auto-discovered)
+    timeout : subprocess timeout seconds    (default: 120)
+
+    Outputs by action
+    -----------------
+    run    -> {agent, ticks_run, total_memories, merkle_root, stdout}
+    verify -> {agent, entries, integrity, merkle_root}
+    report -> full echoes JSON: {agent, goal, entries, integrity, merkle_root, memory[...]}
+
+    Raises StepError if the binary exits non-zero, is not found, times out,
+    or if verify reports a chain integrity failure.
+    """
+    import json as _json
+    import subprocess
+
+    action  = spec.get("action", "run")
+    db      = spec.get("db", "echoes.db")
+    name    = spec.get("agent_name") or spec.get("name", "Echo")
+    goal    = spec.get("goal", "map environment with cryptographic memory")
+    ticks   = int(spec.get("ticks", 8))
+    timeout = float(spec.get("timeout", 120))
+    binary  = spec.get("binary") or _find_echoes_binary()
+
+    if action not in ("run", "verify", "report"):
+        raise StepError(
+            f"echoes_agent: invalid action {action!r}; "
+            "must be 'run', 'verify', or 'report'",
+            {"action": action},
+        )
+
+    if binary is None:
+        raise StepError(
+            "echoes_agent: cannot find echoes binary. "
+            "Put it on PATH or set 'binary' in the step spec.",
+            {"hint": "cd echoes-v1.0-forensic/echoes && cargo build --release"},
+        )
+
+    if action == "run":
+        cmd = [binary, "run", "--db", db, "--ticks", str(ticks),
+               "--name", name, "--goal", goal]
+    elif action == "verify":
+        cmd = [binary, "verify", "--db", db, "--name", name]
+    else:
+        cmd = [binary, "report", "--db", db, "--name", name, "--json"]
+
+    try:
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=timeout,
+        )
+    except FileNotFoundError as e:
+        raise StepError(
+            f"echoes_agent: binary not found: {e}", {"binary": binary},
+        ) from e
+    except subprocess.TimeoutExpired as e:
+        raise StepError(
+            f"echoes_agent: timed out after {timeout}s", {"cmd": cmd},
+        ) from e
+
+    if r.returncode != 0:
+        raise StepError(
+            f"echoes_agent {action!r} failed (exit {r.returncode})",
+            {"returncode": r.returncode,
+             "stdout": r.stdout[:2000],
+             "stderr": r.stderr[:2000]},
+        )
+
+    if action == "run":
+        return _echoes_parse_run(r.stdout, name, ticks)
+    if action == "verify":
+        return _echoes_parse_verify(r.stdout, name)
+    # report
+    try:
+        return _json.loads(r.stdout)
+    except _json.JSONDecodeError as e:
+        raise StepError(
+            f"echoes_agent report: JSON parse failed: {e}",
+            {"stdout": r.stdout[:500]},
+        ) from e
+
+
+# --- echoes helpers (private) ---
+
+def _find_echoes_binary():
+    """Return the echoes binary path: PATH first, then monorepo build dirs."""
+    import os
+    import shutil
+
+    found = shutil.which("echoes")
+    if found:
+        return found
+
+    # Monorepo layout: automaton/ is next to echoes-v1.0-forensic/echoes/
+    base = os.path.join("..", "echoes-v1.0-forensic", "echoes", "target")
+    candidates = [
+        os.path.join(base, "release", "echoes"),
+        os.path.join(base, "debug",   "echoes"),
+    ]
+    if os.name == "nt":
+        candidates = [c + ".exe" for c in candidates] + candidates
+    for c in candidates:
+        if os.path.isfile(c):
+            return os.path.abspath(c)
+    return None
+
+
+def _echoes_parse_run(stdout: str, name: str, ticks_requested: int) -> dict:
+    """Parse human-readable output of ``echoes run``.
+
+    Last line: ``Done — 10 total memories | Merkle root: 5422..b989``
+    """
+    import re
+    result: dict = {
+        "agent":          name,
+        "ticks_run":      ticks_requested,
+        "total_memories": None,
+        "merkle_root":    None,
+        "stdout":         stdout,
+    }
+    m = re.search(r"Done — (\d+) total memories \| Merkle root: (\S+)", stdout)
+    if m:
+        result["total_memories"] = int(m.group(1))
+        result["merkle_root"]    = m.group(2)
+    return result
+
+
+def _echoes_parse_verify(stdout: str, name: str) -> dict:
+    """Parse human-readable output of ``echoes verify``.
+
+    Expected lines::
+        Agent 'Echo' — 10 entries loaded.
+        Hash-chain integrity: PASSED ✓
+        Merkle root:          5422..b989
+
+    Raises StepError when integrity is FAILED so the workflow step fails.
+    """
+    import re
+    result: dict = {
+        "agent":       name,
+        "entries":     None,
+        "integrity":   "unknown",
+        "merkle_root": None,
+    }
+    m = re.search(r"(\d+) entries loaded", stdout)
+    if m:
+        result["entries"] = int(m.group(1))
+    if "PASSED" in stdout:
+        result["integrity"] = "ok"
+    elif "FAILED" in stdout:
+        result["integrity"] = "failed"
+    m = re.search(r"Merkle root:\s+(\S+)", stdout)
+    if m:
+        result["merkle_root"] = m.group(1)
+    if result["integrity"] == "failed":
+        raise StepError(
+            f"echoes_agent verify: hash-chain integrity FAILED for agent {name!r}",
+            result,
+        )
+    return result

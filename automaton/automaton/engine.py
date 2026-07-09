@@ -234,24 +234,46 @@ def worker_loop(conn, worker_id=None, lease_seconds=30, poll_interval=0.5,
 def lease_one(conn, worker_id, lease_seconds):
     now = _utcnow()
     until = _iso(now + timedelta(seconds=lease_seconds))
+    is_pg = getattr(conn, "is_postgres", False)
     with _db.transaction(conn):
-        row = conn.execute(
-            "SELECT step_id FROM queue "
-            f"WHERE ready_at <= {_SQL_NOW} "
-            f"  AND (leased_by IS NULL OR leased_until < {_SQL_NOW}) "
-            "ORDER BY ready_at LIMIT 1"
-        ).fetchone()
-        if row is None:
-            return None
-        step_id = row["step_id"]
-        cur = conn.execute(
-            "UPDATE queue SET leased_by = ?, leased_until = ? "
-            "WHERE step_id = ? "
-            f"  AND (leased_by IS NULL OR leased_until < {_SQL_NOW})",
-            (worker_id, until, step_id),
-        )
-        if cur.rowcount == 0:
-            return None
+        if is_pg:
+            # Postgres: SELECT … FOR UPDATE SKIP LOCKED atomically claims the
+            # row; no optimistic-lock retry needed.  The PgConn wrapper
+            # translates the ? placeholders and datetime() calls automatically.
+            row = conn.execute(
+                "SELECT step_id FROM queue "
+                "WHERE ready_at <= NOW() "
+                "  AND (leased_by IS NULL OR leased_until < NOW()) "
+                "ORDER BY ready_at LIMIT 1 FOR UPDATE SKIP LOCKED"
+            ).fetchone()
+            if row is None:
+                return None
+            step_id = row["step_id"]
+            conn.execute(
+                "UPDATE queue SET leased_by = ?, leased_until = ? "
+                "WHERE step_id = ?",
+                (worker_id, until, step_id),
+            )
+        else:
+            # SQLite: optimistic lock — SELECT then UPDATE with a re-check in
+            # the WHERE clause; rowcount == 0 means a concurrent worker won.
+            row = conn.execute(
+                "SELECT step_id FROM queue "
+                f"WHERE ready_at <= {_SQL_NOW} "
+                f"  AND (leased_by IS NULL OR leased_until < {_SQL_NOW}) "
+                "ORDER BY ready_at LIMIT 1"
+            ).fetchone()
+            if row is None:
+                return None
+            step_id = row["step_id"]
+            cur = conn.execute(
+                "UPDATE queue SET leased_by = ?, leased_until = ? "
+                "WHERE step_id = ? "
+                f"  AND (leased_by IS NULL OR leased_until < {_SQL_NOW})",
+                (worker_id, until, step_id),
+            )
+            if cur.rowcount == 0:
+                return None
         conn.execute(
             "UPDATE step SET status = 'running', started_at = datetime('now') WHERE id = ?",
             (step_id,),
@@ -723,3 +745,141 @@ def reap_timed_out_runs(conn) -> int:
         _try_notify_terminal(conn, run_id)
         reaped += 1
     return reaped
+
+
+def doctor(conn) -> list[dict]:
+    """Run a suite of health checks against the database and engine state.
+
+    Returns a list of result dicts, each with:
+      check  (str)  — dot-separated check name
+      status (str)  — "ok" | "warn" | "fail"
+      detail (str)  — human-readable description
+
+    Does not raise; all exceptions are caught and returned as "fail" items.
+    """
+    results: list[dict] = []
+
+    def _add(check, status, detail):
+        results.append({"check": check, "status": status, "detail": detail})
+
+    # ── db.reachable ────────────────────────────────────────────────────────
+    try:
+        conn.execute("SELECT 1").fetchone()
+        _add("db.reachable", "ok", "database is accessible")
+    except Exception as e:
+        _add("db.reachable", "fail", f"cannot query database: {e}")
+        # Can't run any other checks without DB access
+        return results
+
+    # ── db.migrations ───────────────────────────────────────────────────────
+    try:
+        # Check that the yoyo _yoyo_migration table exists and count applied migrations
+        applied = conn.execute(
+            "SELECT COUNT(*) AS c FROM _yoyo_migration"
+        ).fetchone()["c"]
+        # Count migration files in the migrations/ directory (excluding test files)
+        from pathlib import Path as _Path
+        mig_dir = _Path(__file__).with_name("migrations")
+        core_files = sorted(
+            f for f in mig_dir.glob("*.sql")
+            if not any(t in f.name for t in ("test", "fake", "snapshot", "gate"))
+        )
+        expected = len(core_files)
+        if applied >= expected:
+            _add("db.migrations", "ok",
+                 f"all {expected} core migrations applied ({applied} total)")
+        else:
+            _add("db.migrations", "warn",
+                 f"{applied} migrations applied, expected at least {expected}. "
+                 "Run 'automaton migrate' to update.")
+    except Exception as e:
+        _add("db.migrations", "fail", f"could not check migrations: {e}")
+
+    # ── db.integrity ────────────────────────────────────────────────────────
+    try:
+        result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        if result == "ok":
+            _add("db.integrity", "ok", "PRAGMA integrity_check: ok")
+        else:
+            _add("db.integrity", "fail", f"PRAGMA integrity_check: {result}")
+    except Exception as e:
+        _add("db.integrity", "fail", f"integrity check failed: {e}")
+
+    # ── db.wal_mode ─────────────────────────────────────────────────────────
+    try:
+        mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        if mode == "wal":
+            _add("db.wal_mode", "ok", "WAL mode enabled")
+        else:
+            _add("db.wal_mode", "warn",
+                 f"journal_mode={mode!r}; WAL mode is recommended for concurrency")
+    except Exception as e:
+        _add("db.wal_mode", "fail", f"could not check journal mode: {e}")
+
+    # ── queue.stuck_steps ───────────────────────────────────────────────────
+    try:
+        # A step is "stuck" if it has been leased but the lease expired over
+        # 5 minutes ago. This suggests a dead worker.
+        stuck = conn.execute(
+            "SELECT COUNT(*) AS c FROM queue "
+            "WHERE leased_by IS NOT NULL "
+            "  AND leased_until < datetime('now', '-5 minutes')"
+        ).fetchone()["c"]
+        if stuck == 0:
+            _add("queue.stuck_steps", "ok", "no stuck steps in queue")
+        else:
+            _add("queue.stuck_steps", "warn",
+                 f"{stuck} step(s) appear stuck (lease expired >5 min ago). "
+                 "Check that workers are running.")
+    except Exception as e:
+        _add("queue.stuck_steps", "fail", f"could not check queue: {e}")
+
+    # ── workflows.valid ─────────────────────────────────────────────────────
+    try:
+        wfs = list_workflows(conn)
+        if not wfs:
+            _add("workflows.valid", "ok", "no workflows registered")
+        else:
+            invalid = []
+            for wf in wfs:
+                try:
+                    validate_spec(wf["spec"])
+                except (ValueError, KeyError) as e:
+                    invalid.append(f"{wf['name']!r}: {e}")
+            if not invalid:
+                _add("workflows.valid", "ok",
+                     f"{len(wfs)} workflow(s) registered, all valid")
+            else:
+                _add("workflows.valid", "fail",
+                     f"{len(invalid)} invalid workflow spec(s): "
+                     + "; ".join(invalid))
+    except Exception as e:
+        _add("workflows.valid", "fail", f"could not validate workflows: {e}")
+
+
+    # -- crons.valid --------------------------------------------------
+    try:
+        rows = conn.execute(
+            "SELECT workflow_name AS name, cron_expr "
+            "FROM cron_trigger WHERE enabled = 1"
+        ).fetchall()
+        if not rows:
+            _add("crons.valid", "ok", "no cron triggers registered")
+        else:
+            from croniter import croniter as _croniter
+            bad = []
+            for r in rows:
+                name_val = r["name"]
+                expr_val = r["cron_expr"]
+                if not _croniter.is_valid(expr_val):
+                    bad.append(f"{name_val}={expr_val!r}")
+            if bad:
+                _add("crons.valid", "fail",
+                     "invalid cron expressions: " + ", ".join(bad))
+            else:
+                _add("crons.valid", "ok",
+                     f"{len(rows)} cron trigger(s) all valid")
+    except Exception as e:
+        _add("crons.valid", "fail", f"could not validate crons: {e}")
+
+    return results

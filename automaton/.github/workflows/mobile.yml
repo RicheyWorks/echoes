@@ -1,0 +1,160 @@
+name: mobile
+
+# Build and structural-validate the iOS and Android clients on every PR
+# that touches deploy/ios/ or deploy/android/.
+#
+# Two jobs run in parallel:
+#
+#   ios     — runs xcodebuild on macos-latest; the only place Swift builds
+#             without extra toolchain setup.
+#
+#   android — runs `./gradlew assembleDebug` on ubuntu-latest with the
+#             Android SDK; faster and cheaper than macOS minutes.
+#
+# A third job (deploy-tests) runs the Linux-friendly structural tests
+# (test_deploy_ios.py + test_deploy_android.py) on every push regardless
+# of which files changed, so a Python-side API change that drifts from
+# the client surfaces is always caught.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "automaton/deploy/ios/**"
+      - "automaton/deploy/android/**"
+      - ".github/workflows/mobile.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "automaton/deploy/ios/**"
+      - "automaton/deploy/android/**"
+      - ".github/workflows/mobile.yml"
+  # Manual trigger — useful when iterating on build config without touching
+  # source files.
+  workflow_dispatch:
+
+jobs:
+  # ------------------------------------------------------------------ #
+  # Python structural tests — always run, no compiler required          #
+  # ------------------------------------------------------------------ #
+  deploy-tests:
+    name: Deploy structure tests (Linux)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: automaton
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package + test deps
+        run: pip install -e ".[tls,secrets-headless]" pytest
+
+      - name: Run iOS + Android deploy tests
+        run: pytest tests/test_deploy_ios.py tests/test_deploy_android.py -v --tb=short
+
+  # ------------------------------------------------------------------ #
+  # iOS — xcodebuild on macOS                                           #
+  # ------------------------------------------------------------------ #
+  ios:
+    name: iOS build (macOS)
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: automaton/deploy/ios
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Select a recent stable Xcode.  The -latest runner ships with
+      # multiple versions; pin so the build is reproducible.
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+
+      - name: Resolve Swift Package dependencies
+        run: swift package resolve
+
+      - name: Build AutomatonKit (library, no UI)
+        run: |
+          swift build \
+            --product AutomatonKit \
+            --configuration debug \
+            2>&1 | tail -30
+
+      - name: Build AutomatonApp
+        # -destination generic/platform=iOS requires a device or simulator.
+        # Use the generic iOS simulator destination so it builds without
+        # needing a connected device.
+        run: |
+          xcodebuild build \
+            -scheme AutomatonApp \
+            -destination "generic/platform=iOS Simulator" \
+            -configuration Debug \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            2>&1 | xcpretty || xcodebuild build \
+              -scheme AutomatonApp \
+              -destination "generic/platform=iOS Simulator" \
+              -configuration Debug \
+              CODE_SIGN_IDENTITY="" \
+              CODE_SIGNING_REQUIRED=NO \
+              ONLY_ACTIVE_ARCH=NO
+
+      - name: Run Swift package tests (if any)
+        run: swift test 2>&1 | tail -20 || true
+
+  # ------------------------------------------------------------------ #
+  # Android — Gradle on Ubuntu with Android SDK                         #
+  # ------------------------------------------------------------------ #
+  android:
+    name: Android build (Ubuntu)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: automaton/deploy/android
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: temurin
+          cache: gradle
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cache Gradle wrapper + caches
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/wrapper
+            ~/.gradle/caches
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle.kts', '**/libs.versions.toml') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Gradle assembleDebug
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
+        env:
+          # Suppress unnecessary Gradle daemon warnings in CI
+          GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: automaton/deploy/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7

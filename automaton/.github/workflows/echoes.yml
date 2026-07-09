@@ -1,0 +1,140 @@
+name: echoes
+
+# Build and test the echoes Rust agent on every push that touches it.
+#
+# Three jobs:
+#   test        — cargo test on Linux + macOS (the two platforms with real
+#                 event sources: inotify and kqueue).  Windows is intentionally
+#                 omitted here because the ProcessScanner stub adds no coverage.
+#   test-watch  — cargo test --features watch; verifies the notify crate
+#                 compiles cleanly.  Linux only (cheapest runner).
+#   clippy      — cargo clippy to catch common Rust pitfalls.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "echoes-v1.0-forensic/**"
+      - ".github/workflows/echoes.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "echoes-v1.0-forensic/**"
+      - ".github/workflows/echoes.yml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: echoes-v1.0-forensic/echoes
+
+jobs:
+  # ------------------------------------------------------------------ #
+  # Core test suite — no feature flags                                  #
+  # ------------------------------------------------------------------ #
+  test:
+    name: cargo test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            echoes-v1.0-forensic/echoes/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('echoes-v1.0-forensic/echoes/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: cargo test
+        run: cargo test --locked 2>&1
+
+      - name: Smoke test — run + verify + report
+        run: |
+          cargo build --locked 2>&1
+          ./target/debug/echoes run --ticks 5 --db /tmp/smoke.db --name CI
+          ./target/debug/echoes verify --db /tmp/smoke.db --name CI
+          ./target/debug/echoes report --json --db /tmp/smoke.db --name CI \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); \
+              assert d['integrity']=='ok', f'bad integrity: {d}'; \
+              assert d['entries']==5, f'expected 5 entries: {d}'; \
+              print('smoke OK — entries:', d['entries'], 'root:', d['merkle_root'][:16])"
+
+  # ------------------------------------------------------------------ #
+  # Test with the notify filesystem watcher feature enabled             #
+  # ------------------------------------------------------------------ #
+  test-watch:
+    name: cargo test --features watch (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            echoes-v1.0-forensic/echoes/target
+          key: cargo-watch-${{ runner.os }}-${{ hashFiles('echoes-v1.0-forensic/echoes/Cargo.lock') }}
+          restore-keys: cargo-watch-${{ runner.os }}-
+
+      - name: cargo test --features watch
+        run: cargo test --locked --features watch 2>&1
+
+      - name: Smoke test with --watch flag
+        run: |
+          cargo build --locked --features watch 2>&1
+          # Watch a temp dir — events may or may not fire in CI, but the
+          # binary must start and run without crashing.
+          mkdir -p /tmp/watch_target
+          ./target/debug/echoes run \
+            --ticks 3 \
+            --db /tmp/watch_smoke.db \
+            --name WatchCI \
+            --watch /tmp/watch_target
+          ./target/debug/echoes verify --db /tmp/watch_smoke.db --name WatchCI
+
+  # ------------------------------------------------------------------ #
+  # Clippy lint pass                                                     #
+  # ------------------------------------------------------------------ #
+  clippy:
+    name: cargo clippy
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable + clippy
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            echoes-v1.0-forensic/echoes/target
+          key: cargo-clippy-${{ runner.os }}-${{ hashFiles('echoes-v1.0-forensic/echoes/Cargo.lock') }}
+          restore-keys: cargo-clippy-${{ runner.os }}-
+
+      - name: cargo clippy (default features)
+        run: cargo clippy --locked -- -D warnings
+
+      - name: cargo clippy (watch feature)
+        run: cargo clippy --locked --features watch -- -D warnings

@@ -3,7 +3,7 @@
 # ("automaton" is already taken on PyPI — automaton-engine is the
 # published name; `pip install automaton-engine` then `import automaton`.)
 name = "automaton-engine"
-version = "0.3.0"
+version = "0.5.0"
 description = "A strongly consistent personal automation platform"
 readme = "README.md"
 license = { text = "MIT" }
@@ -52,6 +52,9 @@ test = ["pytest>=7.0", "cryptography>=42.0", "keyrings.alt>=5.0"]
 tls = ["cryptography>=42.0"]
 # Encrypted-file fallback keyring for headless Linux servers (no D-Bus).
 secrets-headless = ["keyrings.alt>=5.0"]
+# Postgres backend (Phase 6).  Set AUTOMATON_DB_URL=postgresql://... to activate.
+# psycopg[binary] bundles libpq so no separate Postgres client install is needed.
+postgres = ["psycopg[binary]>=3.1"]
 
 [project.scripts]
 automaton = "automaton.cli:main"
@@ -71,11 +74,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["automaton*", "templates*"]
+include = ["automaton"]
 
 [tool.setuptools.package-data]
-automaton = ["migrations/*.sql", "py.typed"]
-templates  = ["**/*.yaml", "INDEX.md"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
+automaton = [
+    "py.typed",
+    "migrations/*.sql",
+    "schema.sql",
+]

@@ -1,6 +1,6 @@
 """Structural tests for GitHub Actions workflow files.
 
-Validates all three workflow YAMLs without running them.
+Validates all four workflow YAMLs without running them.
 
 Covers:
   test.yml:
@@ -9,6 +9,7 @@ Covers:
     - Matrix includes Python 3.10, 3.11, 3.12.
     - Has a publish-check job (build + twine check).
     - publish-check uses working-directory or runs from automaton/.
+    - Has a postgres job with a postgres:16 service container.
 
   docs.yml:
     - Triggers on push to docs/** and mkdocs.yml.
@@ -23,6 +24,13 @@ Covers:
     - publish-pypi has id-token: write (OIDC Trusted Publishing).
     - Has a github-release job.
     - Pre-release tags (rc, alpha, beta) set prerelease: true.
+
+  mobile.yml:
+    - Has deploy-tests, ios, and android jobs.
+    - ios job runs on macos-latest.
+    - android job runs on ubuntu-latest and uses setup-java + setup-android.
+    - android job uploads the APK as a build artifact.
+    - Triggers on changes to deploy/ios/ and deploy/android/.
 """
 from __future__ import annotations
 
@@ -35,11 +43,12 @@ try:
 except ModuleNotFoundError:
     yaml = None  # type: ignore[assignment]
 
-ROOT      = Path(__file__).parent.parent
-WORKFLOWS = ROOT / ".github" / "workflows"
-TEST_WF   = WORKFLOWS / "test.yml"
-DOCS_WF   = WORKFLOWS / "docs.yml"
+ROOT       = Path(__file__).parent.parent
+WORKFLOWS  = ROOT / ".github" / "workflows"
+TEST_WF    = WORKFLOWS / "test.yml"
+DOCS_WF    = WORKFLOWS / "docs.yml"
 RELEASE_WF = WORKFLOWS / "release.yml"
+MOBILE_WF  = WORKFLOWS / "mobile.yml"
 
 
 # ------------------------------------------------------------------ #
@@ -274,6 +283,7 @@ def test_release_github_release_needs_publish():
         "github-release job must run after publish-pypi"
 
 
+
 def test_release_marks_prerelease_for_rc_tags():
     cfg = _load(RELEASE_WF)
     all_text = " ".join(_walk(cfg["jobs"]["github-release"]))
@@ -287,3 +297,160 @@ def test_release_workflow_has_contents_write_permission():
     perms = cfg.get("permissions", {})
     assert perms.get("contents") == "write", \
         "release.yml needs contents: write to create GitHub Releases"
+
+
+# ------------------------------------------------------------------ #
+# test.yml — postgres job                                             #
+# ------------------------------------------------------------------ #
+
+def test_test_workflow_has_postgres_job():
+    cfg = _load(TEST_WF)
+    assert "postgres" in cfg.get("jobs", {}), \
+        "test.yml must have a 'postgres' job for backend integration tests"
+
+
+def test_postgres_job_uses_postgres_service():
+    cfg = _load(TEST_WF)
+    services = cfg["jobs"]["postgres"].get("services", {})
+    assert "postgres" in services, \
+        "postgres job must define a 'postgres' service container"
+
+
+def test_postgres_job_uses_correct_image():
+    cfg = _load(TEST_WF)
+    image = cfg["jobs"]["postgres"]["services"]["postgres"].get("image", "")
+    assert image.startswith("postgres:"), \
+        f"postgres service should use a postgres image, got: {image!r}"
+
+
+def test_postgres_job_sets_pg_url_env():
+    cfg = _load(TEST_WF)
+    steps = cfg["jobs"]["postgres"]["steps"]
+    # _walk collects string *values*, so we look for the DSN value that gets
+    # assigned to AUTOMATON_TEST_PG_URL in the step's env: block.
+    all_text = " ".join(_walk(steps))
+    assert "postgresql://" in all_text, \
+        "postgres job must set AUTOMATON_TEST_PG_URL with a postgresql:// DSN"
+
+
+def test_postgres_job_runs_test_postgres():
+    cfg = _load(TEST_WF)
+    steps = cfg["jobs"]["postgres"]["steps"]
+    all_text = " ".join(_walk(steps))
+    assert "test_postgres" in all_text, \
+        "postgres job must run tests/test_postgres.py"
+
+
+def test_postgres_job_installs_postgres_extra():
+    cfg = _load(TEST_WF)
+    steps = cfg["jobs"]["postgres"]["steps"]
+    all_text = " ".join(_walk(steps))
+    assert "postgres" in all_text, \
+        "postgres job must install the [postgres] extra (psycopg3)"
+
+
+# ------------------------------------------------------------------ #
+# mobile.yml                                                          #
+# ------------------------------------------------------------------ #
+
+def test_mobile_workflow_exists():
+    assert MOBILE_WF.exists(), ".github/workflows/mobile.yml not found"
+
+
+def test_mobile_workflow_triggers_on_ios_changes():
+    cfg = _load(MOBILE_WF)
+    on = cfg.get("on", cfg.get(True, {}))
+    pr = on.get("pull_request", {})
+    paths = pr.get("paths", [])
+    assert any("ios" in p for p in paths), \
+        "mobile.yml must trigger on changes to deploy/ios/"
+
+
+def test_mobile_workflow_triggers_on_android_changes():
+    cfg = _load(MOBILE_WF)
+    on = cfg.get("on", cfg.get(True, {}))
+    pr = on.get("pull_request", {})
+    paths = pr.get("paths", [])
+    assert any("android" in p for p in paths), \
+        "mobile.yml must trigger on changes to deploy/android/"
+
+
+def test_mobile_workflow_has_workflow_dispatch():
+    cfg = _load(MOBILE_WF)
+    on = cfg.get("on", cfg.get(True, {}))
+    assert "workflow_dispatch" in on, \
+        "mobile.yml should allow workflow_dispatch for manual builds"
+
+
+def test_mobile_workflow_has_deploy_tests_job():
+    cfg = _load(MOBILE_WF)
+    assert "deploy-tests" in cfg.get("jobs", {}), \
+        "mobile.yml must have a deploy-tests job (Linux structural checks)"
+
+
+def test_mobile_workflow_has_ios_job():
+    cfg = _load(MOBILE_WF)
+    assert "ios" in cfg.get("jobs", {}), \
+        "mobile.yml must have an ios job"
+
+
+def test_mobile_workflow_ios_runs_on_macos():
+    cfg = _load(MOBILE_WF)
+    runs_on = cfg["jobs"]["ios"].get("runs-on", "")
+    assert "macos" in runs_on, \
+        f"ios job must run on macOS, got: {runs_on!r}"
+
+
+def test_mobile_workflow_has_android_job():
+    cfg = _load(MOBILE_WF)
+    assert "android" in cfg.get("jobs", {}), \
+        "mobile.yml must have an android job"
+
+
+def test_mobile_workflow_android_runs_on_ubuntu():
+    cfg = _load(MOBILE_WF)
+    runs_on = cfg["jobs"]["android"].get("runs-on", "")
+    assert "ubuntu" in runs_on, \
+        f"android job must run on ubuntu, got: {runs_on!r}"
+
+
+def test_mobile_workflow_android_sets_up_java():
+    cfg = _load(MOBILE_WF)
+    steps = cfg["jobs"]["android"]["steps"]
+    all_text = " ".join(_walk(steps))
+    assert "setup-java" in all_text, \
+        "android job must use actions/setup-java"
+
+
+def test_mobile_workflow_android_sets_up_android_sdk():
+    cfg = _load(MOBILE_WF)
+    steps = cfg["jobs"]["android"]["steps"]
+    all_text = " ".join(_walk(steps))
+    assert "android" in all_text.lower() and "setup" in all_text.lower(), \
+        "android job must set up the Android SDK"
+
+
+def test_mobile_workflow_android_runs_assemble_debug():
+    cfg = _load(MOBILE_WF)
+    steps = cfg["jobs"]["android"]["steps"]
+    all_text = " ".join(_walk(steps))
+    assert "assembleDebug" in all_text, \
+        "android job must run ./gradlew assembleDebug"
+
+
+def test_mobile_workflow_android_uploads_apk_artifact():
+    cfg = _load(MOBILE_WF)
+    steps = cfg["jobs"]["android"]["steps"]
+    all_text = " ".join(_walk(steps))
+    assert "upload-artifact" in all_text, \
+        "android job must upload the APK as a build artifact"
+
+
+def test_mobile_workflow_deploy_tests_runs_pytest():
+    cfg = _load(MOBILE_WF)
+    steps = cfg["jobs"]["deploy-tests"]["steps"]
+    all_text = " ".join(_walk(steps))
+    assert "test_deploy_ios" in all_text, \
+        "deploy-tests job must run test_deploy_ios.py"
+    assert "test_deploy_android" in all_text, \
+        "deploy-tests job must run test_deploy_android.py"

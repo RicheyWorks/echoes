@@ -436,4 +436,5 @@ class TestKeyRoundTrip:
         assert _req(env["addr"], "DELETE", "/api/keys/temp-revoke-key",
                     token=env["admin_token"])[0] == 200
 
-        # Now it mus
+        # Now it must be rejected
+        assert _req(env["addr"], "GET", "/api/runs", token=raw_key)[0] == 401
