@@ -1,0 +1,22 @@
+{
+  "name": "@richeyworks/echoes-integrity",
+  "version": "1.1.0",
+  "description": "WebAssembly bindings for echoes hash-chain and Merkle-tree integrity verification",
+  "main": "pkg/echoes_wasm.js",
+  "module": "pkg/echoes_wasm.js",
+  "types": "pkg/echoes_wasm.d.ts",
+  "files": ["pkg/"],
+  "scripts": {
+    "build":     "wasm-pack build --target bundler --out-name echoes_wasm",
+    "build:web": "wasm-pack build --target web     --out-name echoes_wasm",
+    "build:node":"wasm-pack build --target nodejs  --out-name echoes_wasm",
+    "test":      "wasm-pack test --node"
+  },
+  "repository": {
+    "type": "git",
+    "url":  "https://github.com/RicheyWorks/echoes.git"
+  },
+  "keywords": ["wasm", "integrity", "merkle", "hash-chain", "forensics", "echoes"],
+  "author":  "Richmond",
+  "license": "MIT"
+}

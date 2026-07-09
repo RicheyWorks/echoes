@@ -1,0 +1,27 @@
+[package]
+name = "echoes-wasm"
+version = "1.1.0"
+edition = "2021"
+description = "WebAssembly bindings for echoes hash-chain and Merkle-tree integrity primitives"
+license = "MIT"
+repository = "https://github.com/RicheyWorks/echoes"
+keywords = ["wasm", "integrity", "merkle", "hash-chain", "forensics"]
+
+# cdylib  — the .wasm binary consumed by wasm-pack / bundlers
+# rlib     — lets us write #[cfg(test)] unit tests with wasm-bindgen-test
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+sha2         = "0.10"
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+# Minimize .wasm size
+opt-level = "s"
+lto = true
