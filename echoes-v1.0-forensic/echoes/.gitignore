@@ -1,1 +1,4 @@
 /target
+/echoes.db
+/echoes.db-wal
+/echoes.db-shm

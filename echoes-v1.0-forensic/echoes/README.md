@@ -1,10 +1,10 @@
 # echoes
 
-A security-minded multi-agent simulation starter in Rust.
+A forensic security agent with cryptographic memory integrity, written in Rust.
 
-The goal of this project is to explore **agent systems with strong integrity and auditability** from the ground up.
+Explores **agent systems with strong auditability** — every decision is hash-chained, Merkle-rooted, and tamper-evident. Memory survives restarts (local SQLite or remote automaton store) and integrity is verified on every load.
 
-## Current Features (v1.0) - Forensic Security Agent
+## Current Features (v1.1) - Forensic Security Agent
 
 - **Structured `SecurityEvent`** types (NetworkConnection, FileAccess, Authentication, ProcessExecution, Custom)
 - Cryptographic memory integrity using **SHA-256 hash chaining + Merkle Tree**
@@ -15,26 +15,103 @@ The goal of this project is to explore **agent systems with strong integrity and
 - `merkle_root()` and Merkle proof generation/verification
 - Comprehensive unit tests
 - Built-in tamper detection demo with structured events
+- **Real event sources** via `sensor.rs` — `FileWatcher` (inotify/kqueue/ReadDirectoryChangesW), `ProcessScanner`, `CompositeSource`
+- **Remote persistence** — `--remote-store URL` persists memory to an [automaton](https://github.com/RicheyWorks/echoes/tree/main/automaton) server; supports cross-machine resume
 
-## How to Run
+## CLI (v1.1)
 
-```bash
-cargo run
+```
+echoes run     [--db PATH] [--ticks N] [--name NAME] [--goal TEXT]
+               [--watch PATH] [--procs]
+               [--remote-store URL] [--token TOKEN]
+echoes verify  [--db PATH] [--name NAME]
+echoes report  [--db PATH] [--name NAME] [--json]
 ```
 
-You should see the agent taking actions, pretty-printed chain + audit log, **Merkle root**, integrity check, and an enhanced tamper demo showing both mechanisms detecting changes.
-
-### Running Tests
+### Basic usage
 
 ```bash
-cargo test
+# Run for 8 ticks and persist to echoes.db
+cargo run -- run --ticks 8
+
+# Resume from the same DB (adds 8 more ticks)
+cargo run -- run --ticks 8
+
+# Verify hash-chain integrity
+cargo run -- verify
+
+# Print the full memory chain as JSON (for automaton integration)
+cargo run -- report --json
 ```
 
-All tests focus on the security guarantees:
-- Normal operation keeps the chain valid
-- Any modification to past memory is detected
-- Goal remains immutable
-- Hash links are correctly formed
+### Real event sources (Phase 4c)
+
+The agent can draw real forensic events instead of synthetic stubs.
+
+**Filesystem watcher** (requires `--features watch`):
+```bash
+cargo run --features watch -- run --ticks 20 --watch /etc
+```
+Records `SecurityEvent::FileAccess` entries for any create/modify/delete
+under the watched path. Uses inotify (Linux), kqueue (macOS), or
+ReadDirectoryChangesW (Windows) via the [`notify`](https://docs.rs/notify) crate.
+
+**Process scanner**:
+```bash
+cargo run -- run --ticks 20 --procs
+```
+Scans for newly-spawned processes each tick and records
+`SecurityEvent::ProcessExecution` entries. Reads `/proc/<pid>/comm` on Linux;
+runs `ps -eo pid,comm` on macOS. No-op on other platforms.
+
+**Combined**:
+```bash
+cargo run --features watch -- run --ticks 50 \
+    --watch /var/log \
+    --procs \
+    --db /var/lib/echoes/monitor.db
+```
+
+### Remote persistence (Option C)
+
+Persist agent memory to an [automaton](https://github.com/RicheyWorks/echoes/tree/main/automaton) server instead of a local SQLite file. Requires automaton ≥ v0.5.0 running with `AUTOMATON_TOKEN` set.
+
+```bash
+# Run against a remote automaton instance
+cargo run -- run --ticks 8 \
+    --remote-store http://192.168.1.10:8080 \
+    --token my-secret-token
+
+# The token can also come from the environment
+export AUTOMATON_TOKEN=my-secret-token
+cargo run -- run --ticks 8 --remote-store http://192.168.1.10:8080
+```
+
+Resume works automatically — on the next run, `load_entries` fetches the existing hash chain from the server so integrity is maintained across machines.
+
+> **Note:** `echoes verify` and `echoes report` remain SQLite-only (forensic integrity checks require local data). Use `echoes run --remote-store` to populate the server, then export the chain with `GET /api/agents/<name>/entries` if offline verification is needed.
+
+### Running tests
+
+```bash
+cargo test                    # default — no real event sources
+cargo test --features watch   # includes FileWatcher compilation
+```
+
+## Architecture
+
+```
+src/
+  agent.rs    — pure computation: hash chain, Merkle tree, SecurityEvent
+  sensor.rs   — real event sources: FileWatcher, ProcessScanner, CompositeSource
+  store.rs    — AgentStore trait; SqliteStore (local) + RemoteStore (HTTP via ureq)
+  main.rs     — clap CLI: run / verify / report
+```
+
+`agent.rs` has no I/O dependency — all unit tests run without any filesystem
+or process-related setup. `sensor.rs` provides the `EventSource` trait and
+two implementations. `think()` always uses synthetic events; `think_with(src)`
+draws from a real source and falls back to synthetic when the source is idle.
 
 ## Security Features
 
@@ -84,18 +161,21 @@ for entry in agent.audit_log() {
 
 ### Checking Memory Integrity
 
-Run the program normally:
+Run the agent and verify in two steps:
 
 ```bash
-cargo run
+cargo run -- run --ticks 10
+cargo run -- verify
 ```
 
-At the end you will see:
+`verify` loads the stored chain and prints:
 
 ```
-=== Integrity Verification ===
 Memory chain integrity: PASSED ✓
+Merkle root: a3f9...
 ```
+
+Exit code is 0 on pass, 1 on failure — safe to use in scripts and CI.
 
 ### Demonstrating Tamper Detection (Educational)
 
@@ -120,10 +200,11 @@ The hash chain ensures that historical decisions cannot be rewritten without det
 
 ## Future Directions
 
-- Multi-agent support with identity
-- Signed actions
+- Multi-agent support with identity — multiple named agents in a single run, cross-agent attestation
+- Signed actions — cryptographically bind each agent action to the agent's keypair
 - Reputation / trust system between agents
 - Secure inter-agent messaging
+- WASM build — the Merkle tree and hash chain code is pure computation with no OS dependencies; a `wasm-pack` build would make the integrity primitives usable in browser or JS/TS environments
 
 ## Philosophy
 

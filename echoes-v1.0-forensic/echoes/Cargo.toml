@@ -1,9 +1,23 @@
 [package]
 name = "echoes"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-sha2 = "0.10"
+sha2        = "0.10"
+rusqlite    = { version = "0.31", features = ["bundled"] }
+clap        = { version = "~4.5", features = ["derive", "env"] }
+serde       = { version = "1",    features = ["derive"] }
+serde_json  = "1"
+hex         = "0.4"
+# HTTP client for RemoteStore (Option C: automaton as echoes' durable store).
+# Sync / blocking — no async runtime needed for a CLI tool.
+ureq        = { version = "2", features = ["json"] }
+# Filesystem watcher — cross-platform (inotify on Linux, kqueue on macOS,
+# ReadDirectoryChangesW on Windows).  Feature-gated via `watch` feature so
+# the agent core and tests compile without it.
+notify      = { version = "6", optional = true }
+
+[features]
+# Enable real filesystem event collection via the `notify` crate.
+watch = ["notify"]
