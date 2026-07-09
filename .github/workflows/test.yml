@@ -3,8 +3,19 @@ name: test
 on:
   push:
     branches: [main]
+    paths:
+      - "automaton/**"
+      - ".github/workflows/test.yml"
   pull_request:
     branches: [main]
+    paths:
+      - "automaton/**"
+      - ".github/workflows/test.yml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: automaton
 
 jobs:
   test:
