@@ -122,6 +122,7 @@ fn main() {
 ///
 /// When `remote_url` is `Some`, a `RemoteStore` is used instead of the local
 /// SQLite file. The remote store talks to an automaton `/api/agents/*` API.
+#[allow(clippy::too_many_arguments)]
 fn cmd_run(db_path: &str, ticks: u32, name: &str, goal: &str,
            watch_path: Option<&str>, scan_procs: bool,
            remote_url: Option<&str>, remote_token: Option<&str>) {

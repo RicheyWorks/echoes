@@ -312,7 +312,7 @@ mod tests {
         let w = FileWatcher::new("/nonexistent/path/that/does/not/exist");
         // Either outcome (None or Some) is valid depending on build config;
         // what must not happen is a panic.
-        drop(w);
+        let _ = w;
     }
 
     #[test]

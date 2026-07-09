@@ -216,6 +216,7 @@ impl Agent {
     ///
     /// Uses synthetic `Custom(...)` events. For real events, use
     /// [`think_with`](Self::think_with).
+    #[allow(dead_code)] // convenience wrapper; exercised by unit tests
     pub fn think(&mut self) -> MemoryEntry {
         self.think_with(None::<&mut crate::sensor::ProcessScanner>)
     }
@@ -317,12 +318,9 @@ impl Agent {
         self.memory.len()
     }
 
+    #[allow(dead_code)] // exercised by unit tests
     pub fn merkle_root(&self) -> Hash {
         MerkleTree::from_memory(&self.memory).root()
-    }
-
-    pub fn audit_log(&self) -> &[AuditEntry] {
-        &self.audit_log
     }
 
     pub fn print_memory_chain(&self) {
@@ -357,6 +355,7 @@ impl Agent {
 // ============================================================
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Merkle-proof API: exercised by unit tests + echoes-wasm parity
 pub struct MerkleProof {
     pub index: usize,
     pub leaf_hash: Hash,
@@ -365,6 +364,7 @@ pub struct MerkleProof {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // `leaves` read only by the test-exercised proof API
 pub struct MerkleTree {
     leaves: Vec<Hash>,
     root: Hash,
@@ -406,6 +406,7 @@ impl MerkleTree {
 
     pub fn short_root(&self) -> String { short_hash(&self.root) }
 
+    #[allow(dead_code)]
     pub fn generate_proof(&self, index: usize) -> Option<MerkleProof> {
         if index >= self.leaves.len() { return None; }
         let mut proof = MerkleProof {
@@ -417,10 +418,10 @@ impl MerkleTree {
         let mut level: Vec<Hash> = self.leaves.clone();
         let mut idx = index;
         while level.len() > 1 {
-            let sib_idx = if idx % 2 == 0 { idx + 1 } else { idx - 1 };
+            let sib_idx = if idx.is_multiple_of(2) { idx + 1 } else { idx - 1 };
             let sibling = if sib_idx < level.len() { level[sib_idx] } else { level[idx] };
             proof.siblings.push(sibling);
-            proof.directions.push(idx % 2 == 0);
+            proof.directions.push(idx.is_multiple_of(2));
             let mut next = Vec::new();
             for i in (0..level.len()).step_by(2) {
                 let l = level[i];
@@ -433,6 +434,7 @@ impl MerkleTree {
         Some(proof)
     }
 
+    #[allow(dead_code)]
     pub fn verify_proof(root: &Hash, proof: &MerkleProof) -> bool {
         let mut current = proof.leaf_hash;
         for (sibling, is_left) in proof.siblings.iter().zip(proof.directions.iter()) {
