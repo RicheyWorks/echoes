@@ -2,7 +2,7 @@
 
 **Status:** Implemented (Phases 1–6 complete)  
 **Date:** 2026-05-23  
-**Updated:** 2026-05-26  
+**Updated:** 2026-07-09  
 **Decider:** Richmond (sole sign-off)  
 **Scope:** Both sub-projects — `automaton` (Python automation engine) and `echoes` (Rust agent integrity framework)
 
@@ -307,5 +307,15 @@ These were noted during implementation and are candidates for a follow-on ADR:
 - ~~**Phase 4c (real event sources):**~~ ✅ Complete — `sensor.rs` added with `EventSource` trait, `FileWatcher` (`notify` crate, feature-gated), `ProcessScanner` (`/proc` on Linux, `ps` on macOS, stub elsewhere), `CompositeSource`. `think_with()` added to `Agent`. CLI flags `--watch PATH` + `--procs`. `echoes.yml` CI workflow.
 - ~~**CI for mobile:**~~ ✅ Complete — `.github/workflows/mobile.yml` with iOS (`xcodebuild` on `macos-latest`) and Android (`setup-java@v4` JDK17 + `setup-android@v3` + `gradlew assembleDebug`) jobs. Structural tests in `test_deploy_ci.py`.
 - ~~**Option C (automaton as echoes' persistence layer):**~~ ✅ Complete — `0004-agents.sql` schema, `agents.py` CRUD module, five `/api/agents/*` HTTP routes with Bearer auth, `AgentStore` trait in Rust (`SqliteStore` + `RemoteStore` via `ureq`), `--remote-store URL --token TOKEN` flags on `echoes run`. 26 HTTP-level tests in `test_agents.py`.
-- **Multi-tenant auth:** If anyone other than the sole operator ever runs automaton, a user/role layer is needed atop the single-token model.
-- **WASM build of echoes:** The Merkle tree and hash chain code is pure computation with no OS dependencies — a WASM build would make the integrity primitives usable in browser or JS/TS environments.
+- ~~**Multi-tenant auth:**~~ ✅ Complete — API-key auth with roles (migration `0005`, `auth.py`, `/api/keys` CRUD, `automaton key` CLI). 37 tests in `test_multitenancy.py`.
+- ~~**WASM build of echoes:**~~ ✅ Complete — `echoes-wasm` crate (v1.1.0, `wasm-bindgen`) exposing the hash-chain + Merkle primitives to JS/TS. Hashing matches `agent.rs` exactly; builds for `wasm32-unknown-unknown` in both debug and release, with 8 `wasm-bindgen-test` tests. `wasm-pack` emits the `pkg/` bindings (git-ignored build output).
+
+---
+
+## Known Issues (found & addressed 2026-07-09)
+
+Surfaced during the v1.1 / v0.5.0 release pass:
+
+1. **CI workflows were not running.** All workflows lived under `automaton/.github/workflows/`, but GitHub Actions only executes workflows at the repository-root `.github/workflows/` — so none had ever run (the Actions API reported zero runs). **Resolved:** `test.yml`, `echoes.yml`, and `mobile.yml` were relocated to `/.github/workflows/` (test.yml gained `defaults.run.working-directory: automaton` plus a `paths` filter; the other two were already root-relative). **Pending sign-off:** `release.yml` (publishes to PyPI on any `v*` tag push) and `docs.yml` (deploys MkDocs to gh-pages) remain under `automaton/.github/` — relocating `release.yml` turns every `v*` tag push into a live PyPI publish, so it was left in place until explicitly approved. Note: `echoes.yml`'s clippy job runs `-D warnings`, so the remaining `audit_log` dead-code warning in `agent.rs` will fail it until removed or `#[allow]`-ed.
+
+2. **Release tags pointed to the wrong commit.** `echoes-v1.1.0` and `v0.5.0` pointed to `79c8a19` ("Phase 26"), predating the actual releases. **Resolved:** re-pointed to the real release commits — `echoes-v1.1.0` → `5f6f873`, `v0.5.0` → `6f55503` (a `git push --force` updates them on origin).
