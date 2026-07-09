@@ -1,2 +1,0 @@
-[console_scripts]
-automaton = automaton.cli:main
