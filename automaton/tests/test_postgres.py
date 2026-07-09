@@ -101,6 +101,25 @@ class TestTranslate:
         assert needs is True
         assert "RETURNING id" in sql
 
+    def test_insert_into_queue_gets_no_returning(self):
+        # queue's PK is step_id, not id — appending RETURNING id would be
+        # rejected by Postgres (regression: first live CI run, 2026-07-09).
+        sql, needs = _translate("INSERT INTO queue (step_id) VALUES (?)")
+        assert "RETURNING" not in sql
+        assert needs is False
+
+    def test_julianday_diff_with_placeholders(self):
+        sql, _ = _translate(
+            "SELECT CAST((julianday(?) - julianday(?)) * 86400 AS INTEGER) AS s")
+        assert "julianday" not in sql
+        assert "EXTRACT(EPOCH FROM (CAST(%s AS timestamptz) - CAST(%s AS timestamptz)))" in sql
+
+    def test_julianday_now_minus_column(self):
+        sql, _ = _translate(
+            "AND (julianday('now') - julianday(r.started_at)) * 86400 > ?")
+        assert "julianday" not in sql
+        assert "EXTRACT(EPOCH FROM (NOW() - CAST(r.started_at AS timestamptz))) > %s" in sql
+
     def test_insert_with_existing_returning_unchanged(self):
         sql, needs = _translate("INSERT INTO foo (x) VALUES (?) RETURNING id")
         assert needs is False
@@ -252,7 +271,7 @@ class TestEngineOnPostgres:
         run_id = engine.trigger_run(conn, "pg-happy")
         engine.worker_loop(conn, stop_when_idle=True)
         detail = engine.run_detail(conn, run_id)
-        assert detail["status"] == "completed"
+        assert detail["run"]["status"] == "completed"
         _teardown(conn)
 
     @_REQUIRES_PG
@@ -268,7 +287,7 @@ class TestEngineOnPostgres:
         run_id = engine.trigger_run(conn, "pg-dag")
         engine.worker_loop(conn, stop_when_idle=True)
         detail = engine.run_detail(conn, run_id)
-        assert detail["status"] == "completed"
+        assert detail["run"]["status"] == "completed"
         step_names = {s["name"] for s in detail["steps"]}
         assert step_names == {"a", "b"}
         _teardown(conn)
@@ -283,7 +302,7 @@ class TestEngineOnPostgres:
         run_id = engine.trigger_run(conn, "pg-fail")
         engine.worker_loop(conn, stop_when_idle=True)
         detail = engine.run_detail(conn, run_id)
-        assert detail["status"] == "failed"
+        assert detail["run"]["status"] == "failed"
         _teardown(conn)
 
     @_REQUIRES_PG

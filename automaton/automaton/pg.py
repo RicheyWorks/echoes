@@ -58,6 +58,18 @@ _RAW_TRANSLATIONS: list[tuple[str, str]] = [
     ),
     # datetime('now') — used in DEFAULT and UPDATE SET … = datetime('now')
     (r"datetime\('now'\)", "NOW()"),
+    # (julianday(a) - julianday(b)) * 86400 — SQLite's seconds-between idiom
+    # (timeout sweep, notify durations, wait steps).  Postgres: interval
+    # subtraction + EXTRACT(EPOCH ...).  Must run before the qmark rule so
+    # `?` args inside still get converted afterwards.
+    (
+        r"\(julianday\('now'\)\s*-\s*julianday\(([^()?]+|\?)\)\)\s*\*\s*86400",
+        r"EXTRACT(EPOCH FROM (NOW() - CAST(\1 AS timestamptz)))",
+    ),
+    (
+        r"\(julianday\(([^()?]+|\?)\)\s*-\s*julianday\(([^()?]+|\?)\)\)\s*\*\s*86400",
+        r"EXTRACT(EPOCH FROM (CAST(\1 AS timestamptz) - CAST(\2 AS timestamptz)))",
+    ),
     # SQLite exclusive transaction → standard BEGIN for Postgres
     (r"\bBEGIN IMMEDIATE\b", "BEGIN"),
     # SQLite qmark → Postgres positional placeholder
@@ -71,6 +83,13 @@ _TRANSLATIONS = [
 _INSERT_OR_IGNORE_RE = re.compile(r"\bINSERT\s+OR\s+IGNORE\b", re.IGNORECASE)
 _INSERT_RE = re.compile(r"\bINSERT\b", re.IGNORECASE)
 _RETURNING_RE = re.compile(r"\bRETURNING\b", re.IGNORECASE)
+_INSERT_TABLE_RE = re.compile(r"\bINSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+
+# Tables whose primary key is not an ``id`` column.  ``RETURNING id`` must
+# not be appended to INSERTs on these — Postgres rejects the statement
+# (SQLite silently satisfies ``lastrowid`` via the implicit rowid).  No
+# caller reads ``lastrowid`` after inserting into them.
+_NO_ID_TABLES = frozenset({"queue"})
 
 
 def _translate(sql: str) -> tuple[str, bool]:
@@ -93,7 +112,10 @@ def _translate(sql: str) -> tuple[str, bool]:
 
     is_insert = bool(_INSERT_RE.search(sql))
     has_returning = bool(_RETURNING_RE.search(sql))
-    needs_lastrowid = is_insert and not has_returning and not has_ignore
+    table_match = _INSERT_TABLE_RE.search(sql)
+    table = table_match.group(1).lower() if table_match else None
+    needs_lastrowid = (is_insert and not has_returning and not has_ignore
+                       and table not in _NO_ID_TABLES)
 
     if needs_lastrowid:
         sql = sql.rstrip().rstrip(";") + " RETURNING id"
