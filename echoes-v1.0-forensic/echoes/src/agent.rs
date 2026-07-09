@@ -216,7 +216,6 @@ impl Agent {
     ///
     /// Uses synthetic `Custom(...)` events. For real events, use
     /// [`think_with`](Self::think_with).
-    #[allow(dead_code)] // convenience wrapper; exercised by unit tests
     pub fn think(&mut self) -> MemoryEntry {
         self.think_with(None::<&mut crate::sensor::ProcessScanner>)
     }
@@ -318,7 +317,6 @@ impl Agent {
         self.memory.len()
     }
 
-    #[allow(dead_code)] // exercised by unit tests
     pub fn merkle_root(&self) -> Hash {
         MerkleTree::from_memory(&self.memory).root()
     }
@@ -355,7 +353,6 @@ impl Agent {
 // ============================================================
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // Merkle-proof API: exercised by unit tests + echoes-wasm parity
 pub struct MerkleProof {
     pub index: usize,
     pub leaf_hash: Hash,
@@ -364,7 +361,6 @@ pub struct MerkleProof {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)] // `leaves` read only by the test-exercised proof API
 pub struct MerkleTree {
     leaves: Vec<Hash>,
     root: Hash,
@@ -406,7 +402,6 @@ impl MerkleTree {
 
     pub fn short_root(&self) -> String { short_hash(&self.root) }
 
-    #[allow(dead_code)]
     pub fn generate_proof(&self, index: usize) -> Option<MerkleProof> {
         if index >= self.leaves.len() { return None; }
         let mut proof = MerkleProof {
@@ -434,7 +429,6 @@ impl MerkleTree {
         Some(proof)
     }
 
-    #[allow(dead_code)]
     pub fn verify_proof(root: &Hash, proof: &MerkleProof) -> bool {
         let mut current = proof.leaf_hash;
         for (sibling, is_left) in proof.siblings.iter().zip(proof.directions.iter()) {

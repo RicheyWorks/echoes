@@ -5,14 +5,11 @@
 //!   verify  Reload the agent from the DB and verify hash-chain integrity.
 //!   report  Print the full memory chain + Merkle root; optionally as JSON.
 
-mod agent;
-mod sensor;
-mod store;
 
 use clap::{Parser, Subcommand};
 use serde_json::json;
-use agent::{Agent, MerkleTree};
-use store::{AgentStore, RemoteStore, Store};
+use echoes::agent::{Agent, MerkleTree};
+use echoes::store::{AgentStore, RemoteStore, Store};
 
 // ============================================================
 // CLI definition
@@ -169,7 +166,7 @@ fn cmd_run(db_path: &str, ticks: u32, name: &str, goal: &str,
     };
 
     // Build the composite sensor from whichever sources were requested. -----
-    use sensor::{CompositeSource, EventSource, FileWatcher, ProcessScanner};
+    use echoes::sensor::{CompositeSource, EventSource, FileWatcher, ProcessScanner};
     let mut sources: Vec<Box<dyn EventSource>> = Vec::new();
 
     if let Some(p) = watch_path {
@@ -307,7 +304,7 @@ fn load_meta_or_exit(store: &Store, name: &str, db_path: &str) -> (String, u32) 
     }
 }
 
-fn load_entries_or_exit(store: &Store, name: &str, db_path: &str) -> Vec<agent::MemoryEntry> {
+fn load_entries_or_exit(store: &Store, name: &str, db_path: &str) -> Vec<echoes::agent::MemoryEntry> {
     store.load_entries(name).unwrap_or_else(|e| {
         eprintln!("error: could not load entries for '{}' from '{}': {}", name, db_path, e);
         std::process::exit(1);
