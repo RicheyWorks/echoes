@@ -3,7 +3,7 @@
 # ("automaton" is already taken on PyPI — automaton-engine is the
 # published name; `pip install automaton-engine` then `import automaton`.)
 name = "automaton-engine"
-version = "0.5.0"
+version = "0.5.1"
 description = "A strongly consistent personal automation platform"
 readme = "README.md"
 license = { text = "MIT" }

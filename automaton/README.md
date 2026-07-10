@@ -1,4 +1,4 @@
-# automaton  (v0.5.0)
+# automaton  (v0.5.1)
 
 [![test](https://github.com/RicheyWorks/echoes/actions/workflows/test.yml/badge.svg)](https://github.com/RicheyWorks/echoes/actions/workflows/test.yml)
 [![mobile](https://github.com/RicheyWorks/echoes/actions/workflows/mobile.yml/badge.svg)](https://github.com/RicheyWorks/echoes/actions/workflows/mobile.yml)

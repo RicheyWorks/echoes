@@ -51,6 +51,13 @@ def test_distribution_name_is_automaton_engine():
     )
 
 
+def test_dunder_version_matches_pyproject():
+    """__version__ drifted to 0.1.0 once; pin it to pyproject forever."""
+    import automaton
+    cfg = _load()
+    assert automaton.__version__ == cfg["project"]["version"]
+
+
 def test_version_is_semver():
     cfg = _load()
     version = cfg["project"]["version"]

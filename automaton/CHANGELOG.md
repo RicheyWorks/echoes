@@ -9,7 +9,18 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+Nothing yet.
+
+---
+
+## [0.5.1] — 2026-07-10
+
 ### Fixed
+- `automaton.__version__` said `0.1.0`; it now matches the package version
+  and a test pins it to `pyproject.toml`.
+- `release.yml`: the CHANGELOG-extraction step never substituted the version
+  into its heredoc, so every GitHub Release body would have read
+  "Release $VERSION".
 *(all found by the first-ever live execution of CI — the workflows previously
 lived under `automaton/.github/` where GitHub Actions never ran them)*
 

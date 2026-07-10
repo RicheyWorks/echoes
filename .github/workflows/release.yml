@@ -121,9 +121,10 @@ jobs:
         run: |
           # Pull the block between the current version header and the next.
           VERSION="${GITHUB_REF_NAME#v}"   # strip leading 'v'
+          export VERSION
           BODY=$(python3 - <<'PYEOF'
-          import re, sys, pathlib
-          version = "$VERSION"
+          import os, re, sys, pathlib
+          version = os.environ["VERSION"]
           src = pathlib.Path("automaton/CHANGELOG.md").read_text()
           # Match from ## [VERSION] down to (but not including) the next ## [
           pattern = rf"## \[{re.escape(version)}\].*?(?=\n## \[|\Z)"
