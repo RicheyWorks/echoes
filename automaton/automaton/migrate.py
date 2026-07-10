@@ -58,6 +58,15 @@ def _backend(db_path):
     return get_backend(f"sqlite:///{os.fspath(db_path)}")
 
 
+def _close_backend(backend) -> None:
+    """Close the backend's DBAPI connection (yoyo holds it open forever;
+    on Windows the leaked handle locks the DB file)."""
+    try:
+        backend.connection.close()
+    except Exception:
+        pass
+
+
 def _read_migrations():
     from yoyo import read_migrations
     return read_migrations(str(MIGRATIONS_DIR))
@@ -113,8 +122,11 @@ def _install_shim(db_path) -> None:
             "expected migration 0001-initial.sql but didn't find it - "
             "is the migrations/ directory intact?"
         )
-    with backend.lock():
-        backend.mark_migrations(initial)
+    try:
+        with backend.lock():
+            backend.mark_migrations(initial)
+    finally:
+        _close_backend(backend)
 
 
 def _pre_migrate_snapshot(db_path) -> str:
@@ -144,7 +156,10 @@ def pending(db_path) -> List[str]:
         _install_shim(db_path)
     backend = _backend(db_path)
     migrations = _read_migrations()
-    return [m.id for m in backend.to_apply(migrations)]
+    try:
+        return [m.id for m in backend.to_apply(migrations)]
+    finally:
+        _close_backend(backend)
 
 
 def current_version(db_path) -> Optional[str]:
@@ -174,13 +189,18 @@ def apply(db_path, snapshot: bool = False) -> dict:
 
     backend = _backend(db_path)
     migrations = _read_migrations()
-    with backend.lock():
-        to_apply = backend.to_apply(migrations)  # already a MigrationList
-        snapshot_path = None
-        if len(to_apply) and snapshot and Path(db_path).exists():
-            snapshot_path = _pre_migrate_snapshot(db_path)
-        applied_ids = [m.id for m in to_apply]
-        backend.apply_migrations(to_apply)
+    try:
+        with backend.lock():
+            to_apply = backend.to_apply(migrations)  # already a MigrationList
+            snapshot_path = None
+            if len(to_apply) and snapshot and Path(db_path).exists():
+                snapshot_path = _pre_migrate_snapshot(db_path)
+            applied_ids = [m.id for m in to_apply]
+            backend.apply_migrations(to_apply)
+    finally:
+        # On Windows a leaked handle locks the DB file, breaking any later
+        # unlink()/os.replace() on it (backup restore, test cleanup).
+        _close_backend(backend)
     return {
         "applied": applied_ids,
         "snapshot": snapshot_path,
