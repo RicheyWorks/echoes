@@ -101,7 +101,9 @@ def run_workers_until_idle(open_conn: Callable, worker_count: int,
 
     stop.set()
     for t in threads:
-        t.join(timeout=2.0)
+        # Generous join: on Windows an alive thread's open connection makes
+        # the tempdir cleanup fail with WinError 32.
+        t.join(timeout=15.0)
     return time.perf_counter() - start
 
 

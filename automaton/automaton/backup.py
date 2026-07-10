@@ -43,14 +43,23 @@ def snapshot(src_path: str | Path, dest_path: str | Path,
 
     start = time.monotonic()
     pages_total = 0
-    with sqlite3.connect(src_path, timeout=30.0) as src:
-        with sqlite3.connect(dest_path) as dest:
+    # NB: ``with sqlite3.connect(...)`` is a *transaction* scope, not a
+    # close.  The connections must be closed explicitly or the open handles
+    # keep the files locked on Windows (os.replace / rmtree then fail).
+    src = sqlite3.connect(src_path, timeout=30.0)
+    try:
+        dest = sqlite3.connect(dest_path)
+        try:
             # progress callback receives (status, remaining, page_count)
             def progress(status, remaining, page_count):
                 nonlocal pages_total
                 pages_total = page_count
             src.backup(dest, pages=pages_per_step, progress=progress,
                        sleep=sleep_ms / 1000.0)
+        finally:
+            dest.close()
+    finally:
+        src.close()
     elapsed = time.monotonic() - start
     size_bytes = os.path.getsize(dest_path)
     result = {

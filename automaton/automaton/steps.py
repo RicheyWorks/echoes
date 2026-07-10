@@ -272,6 +272,11 @@ def _shell(spec, idempotency_key):
         # the tokenization on Windows without changing POSIX behavior.
         import shlex
         cmd = shlex.split(cmd, posix=(os.name != "nt"))
+        if os.name == "nt":
+            # Non-POSIX shlex keeps the surrounding quote characters in the
+            # token; python -c "print('x')" would receive a quoted literal.
+            cmd = [t[1:-1] if len(t) >= 2 and t[0] == t[-1] and t[0] in "\"'"
+                   else t for t in cmd]
     cwd = spec.get("cwd")
     env_extra = spec.get("env") or {}
     timeout = float(spec.get("timeout", 60))

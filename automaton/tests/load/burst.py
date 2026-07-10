@@ -36,7 +36,7 @@ def run(count: int = 1000, workers: int = 4,
         log_dir: str | None = None) -> dict:
     tmpdir_obj = None
     if db_path is None:
-        tmpdir_obj = tempfile.TemporaryDirectory()
+        tmpdir_obj = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         db_path = os.path.join(tmpdir_obj.name, "burst.db")
     if log_dir is None:
         log_dir = tempfile.mkdtemp(prefix="burst-logs-")

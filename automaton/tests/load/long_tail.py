@@ -50,7 +50,7 @@ def run(short_count: int = 50, long_count: int = 5, workers: int = 4,
         db_path: str | None = None) -> dict:
     tmpdir_obj = None
     if db_path is None:
-        tmpdir_obj = tempfile.TemporaryDirectory()
+        tmpdir_obj = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         db_path = os.path.join(tmpdir_obj.name, "longtail.db")
 
     conn = _db.connect(db_path)

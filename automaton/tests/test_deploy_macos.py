@@ -14,6 +14,7 @@ import plistlib
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -75,6 +76,8 @@ def test_plist_environment_variables_include_db_path(name):
     assert "Library/Application Support/automaton" in env["AUTOMATON_DB"]
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="NTFS has no POSIX exec bit; mode is meaningless here")
 def test_install_script_exists_and_is_executable():
     p = DEPLOY / "install.sh"
     assert p.exists()
@@ -83,12 +86,16 @@ def test_install_script_exists_and_is_executable():
     assert p.stat().st_mode & 0o100
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="NTFS has no POSIX exec bit; mode is meaningless here")
 def test_uninstall_script_exists_and_is_executable():
     p = DEPLOY / "uninstall.sh"
     assert p.exists()
     assert p.stat().st_mode & 0o100
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="bash -n needs a real bash; not reliable on Windows runners")
 def test_install_script_syntax_clean():
     """bash -n parses the script without executing - catches typos."""
     r = subprocess.run(
@@ -98,6 +105,8 @@ def test_install_script_syntax_clean():
     assert r.returncode == 0, r.stderr
 
 
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="bash -n needs a real bash; not reliable on Windows runners")
 def test_uninstall_script_syntax_clean():
     r = subprocess.run(
         ["bash", "-n", str(DEPLOY / "uninstall.sh")],

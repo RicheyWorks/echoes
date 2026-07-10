@@ -9,6 +9,8 @@ Cover:
 """
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from automaton import db as _db
@@ -27,7 +29,7 @@ def _seed_completed_run(conn, name="wf", days_ago=0):
     """Create a completed run + step + event_log, with timestamps pushed back."""
     engine.register_workflow(conn, {
         "name": name,
-        "steps": [{"name": "noop", "type": "file_append", "path": "/dev/null"}],
+        "steps": [{"name": "noop", "type": "file_append", "path": os.devnull}],
     })
     run_id = engine.trigger_run(conn, name)
     engine.worker_loop(conn, stop_when_idle=True)
