@@ -327,3 +327,22 @@ Surfaced during the v1.1 / v0.5.0 release pass:
 5. **`v0.4.0` tag missing.** Phase 1 records v0.4.0 as tagged and published, but no `v0.4.0` tag exists locally or on origin (only v0.3.0 and v0.5.0). Harmless if v0.4.0 was published to PyPI before the tag was lost, but worth re-creating for provenance.
 
 6. **Doc drift — Phase 4d JSON contract.** The ADR lists keys `agent_name`/`memory_len`/`integrity_ok`; the shipped contract (consistent across `echoes report --json` and `automaton/steps.py`) is `agent`/`memory`/`integrity` plus `goal`, `merkle_root`, `entries`. The code is internally consistent; this document's Phase 4d wording is the stale side.
+
+7. **CI hardening pass (2026-07-09/10) — first fully green board.** The first
+   real executions of every workflow surfaced, in order: a truncated
+   `twine c` command in test.yml (never valid); two genuine Postgres bugs in
+   `pg.py` (`RETURNING id` appended to `queue` inserts, and SQLite's
+   `julianday()` idiom untranslated); leaked SQLite/yoyo connections in
+   `backup.py` and `migrate.py` (`with sqlite3.connect(...)` is a transaction
+   scope, not a close) that locked DB files on Windows; Windows shell-token
+   quoting in `steps.py`; a reverse-DNS black-hole on GitHub's macOS runners
+   that hung the suite inside yoyo's `socket.getfqdn()` call (patched in
+   `tests/conftest.py`); macOS deploy scripts tracked without the exec bit;
+   missing Android `gradle.properties`, launcher icons, and a nonexistent
+   AppCompat theme; a pinned Xcode path that no longer exists on
+   `macos-latest`; and two flaky races (early-401 connection resets on
+   Windows, a `*/1` cron that could legitimately double-fire across a minute
+   boundary). All fixed across commits `20ed2db`…`56d4275`. `pytest-timeout`
+   (`--timeout=120`) and job-level `timeout-minutes` are now standing guards
+   against future hangs. As of `56d4275`, **all five workflows are green** on
+   ubuntu/macOS/windows × py3.10–3.12, Postgres 16, iOS, and Android.

@@ -9,6 +9,38 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+*(all found by the first-ever live execution of CI — the workflows previously
+lived under `automaton/.github/` where GitHub Actions never ran them)*
+
+- **Postgres backend:** `_translate()` no longer appends `RETURNING id` to
+  INSERTs on tables whose primary key isn't `id` (the `queue` table); SQLite's
+  `julianday()` seconds-between idiom is now translated to
+  `EXTRACT(EPOCH FROM ...)` — timeout sweep, notify durations, and wait steps
+  previously raised `UndefinedFunction` on Postgres.
+- **Windows:** `backup.snapshot()` and every `migrate.py` entry point now close
+  their SQLite/yoyo connections explicitly (a `with sqlite3.connect(...)` block
+  is a transaction scope, not a close) — leaked handles kept DB files locked,
+  breaking `restore()` and temp-dir cleanup. String-form `shell` step commands
+  no longer retain surrounding quotes after tokenization on Windows.
+- **UI server:** early rejections (401/400) on POST/PUT/PATCH drain the unread
+  request body before responding, so clients get the status code instead of a
+  connection reset.
+- **Test suite:** `socket.getfqdn` is patched in `conftest.py` (reverse DNS
+  black-holes on GitHub's macOS runners and hung the suite inside yoyo's
+  migration logging); macOS deploy-script checks are skipped on Windows;
+  `/dev/null` → `os.devnull`; scheduler race test uses a yearly cron so a
+  minute-boundary crossing can't double-fire.
+- **CI:** `test.yml`'s truncated `twine c` restored to `twine check dist/*`;
+  pytest jobs get `timeout-minutes` + `pytest-timeout`; the mobile workflow
+  selects the newest stable Xcode dynamically and provisions Gradle directly;
+  Android app gained the missing `gradle.properties`, adaptive launcher
+  icons, and a platform (non-AppCompat) theme.
+
+---
+
+## [0.5.0] — 2026-05-26
+
 ### Added
 - **Multi-tenant API key auth** — replaces the single shared `AUTOMATON_TOKEN`
   with a full role-based access model while keeping full backward compatibility:
@@ -38,12 +70,6 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
   - `tests/test_multitenancy.py` — 37 integration tests covering all roles,
     revoked/unknown tokens, `last_used_at` tracking, key API round-trips, and
     401 vs 403 distinctions.
-
----
-
-## [0.5.0] — 2026-05-26
-
-### Added
 - **Option C: automaton as `echoes` durable store** — automaton now acts as
   a remote persistence backend for echoes agents running on any machine:
   - `automaton/migrations/0004-agents.sql` — adds `agent` and `agent_memory`

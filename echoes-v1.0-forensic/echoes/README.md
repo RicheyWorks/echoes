@@ -1,5 +1,7 @@
 # echoes
 
+[![echoes CI](https://github.com/RicheyWorks/echoes/actions/workflows/echoes.yml/badge.svg)](https://github.com/RicheyWorks/echoes/actions/workflows/echoes.yml)
+
 A forensic security agent with cryptographic memory integrity, written in Rust.
 
 Explores **agent systems with strong auditability** — every decision is hash-chained, Merkle-rooted, and tamper-evident. Memory survives restarts (local SQLite or remote automaton store) and integrity is verified on every load.

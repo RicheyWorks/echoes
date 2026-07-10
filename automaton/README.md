@@ -1,5 +1,10 @@
 # automaton  (v0.5.0)
 
+[![test](https://github.com/RicheyWorks/echoes/actions/workflows/test.yml/badge.svg)](https://github.com/RicheyWorks/echoes/actions/workflows/test.yml)
+[![mobile](https://github.com/RicheyWorks/echoes/actions/workflows/mobile.yml/badge.svg)](https://github.com/RicheyWorks/echoes/actions/workflows/mobile.yml)
+[![docs](https://github.com/RicheyWorks/echoes/actions/workflows/docs.yml/badge.svg)](https://github.com/RicheyWorks/echoes/actions/workflows/docs.yml)
+[![PyPI](https://img.shields.io/pypi/v/automaton-engine)](https://pypi.org/project/automaton-engine/)
+
 A strongly consistent personal automation platform.
 
 Triggers fire workflows. Workflows are a DAG of steps. Every step's *observable* side effect happens exactly once, even when workers crash mid-step. State lives in a single SQLite database — back that one file up and you've backed up the system.
@@ -480,7 +485,7 @@ pip install pytest
 python -m pytest tests/
 ```
 
-All 795 tests should pass in under 60 seconds (Postgres integration tests are skipped without `AUTOMATON_TEST_PG_URL`). The headline ones are:
+All 815 tests should pass in under 90 seconds (Postgres integration tests are skipped without `AUTOMATON_TEST_PG_URL`). CI runs the suite on Linux, macOS, and Windows across Python 3.10–3.12, plus a Postgres 16 job. The headline ones are:
 - `test_exactly_once_under_crash` — kill the worker mid-step, assert exactly-once side effect.
 - `test_two_schedulers_one_run` — two scheduler threads on the same overdue trigger produce exactly one run.
 - `test_retries_succeed_on_third_attempt` — failing step retries successfully and the run completes.
