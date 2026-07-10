@@ -112,7 +112,10 @@ def test_two_schedulers_one_run(tmp_path):
     setup = _db.connect(db_path)
     _db.migrate(setup)
     _register_noop_workflow(setup, tmp_path / "out.log")
-    sched.register_cron(setup, "tick", "*/1 * * * *")
+    # Yearly cadence: after the overdue fire, the next legitimate fire is
+    # ~a year away. With */1 the 1s test window could straddle a real
+    # minute boundary on a slow runner and fire a second (legitimate) run.
+    sched.register_cron(setup, "tick", "0 0 1 1 *")
     setup.execute(
         "UPDATE cron_trigger SET next_fire_at = ?",
         (sched._iso(sched._utcnow() - timedelta(minutes=1)),),

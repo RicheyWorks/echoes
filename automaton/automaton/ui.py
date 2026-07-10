@@ -673,6 +673,20 @@ def make_handler(db_path: str, auth_token: Optional[str], require_auth: bool,
         # --- helpers ---
         def _send(self, status, body, content_type="text/html; charset=utf-8"):
             data = body.encode("utf-8") if isinstance(body, str) else body
+            # Drain the request body if the handler never read it (early
+            # rejections like 401). Replying while the client is still
+            # writing makes the OS reset the connection — on Windows the
+            # client sees ConnectionAborted instead of the status code.
+            # Bounded so a huge Content-Length can't stall us.
+            if (status >= 400 and self.command in ("POST", "PUT", "PATCH")
+                    and not getattr(self, "_body_consumed", False)):
+                try:
+                    remaining = int(self.headers.get("Content-Length") or 0)
+                    if remaining > 0:
+                        self.rfile.read(min(remaining, 1 << 20))
+                        self._body_consumed = True
+                except (ValueError, OSError):
+                    pass
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
@@ -690,6 +704,7 @@ def make_handler(db_path: str, auth_token: Optional[str], require_auth: bool,
 
         def _read_body(self):
             length = int(self.headers.get("Content-Length") or 0)
+            self._body_consumed = True
             return self.rfile.read(length) if length else b""
 
         def _get_role(self) -> Optional[str]:
