@@ -66,6 +66,15 @@ class AutomatonClient(
         runs().map { it.workflow }.distinct().sorted()
     }
 
+    suspend fun agents(): List<AgentSummary> = withContext(Dispatchers.IO) {
+        get("/api/agents")
+    }
+
+    suspend fun agentEntries(name: String): List<AgentMemoryEntry> =
+        withContext(Dispatchers.IO) {
+            get<AgentEntriesResponse>("/api/agents/$name/entries").entries
+        }
+
     suspend fun trigger(workflow: String,
                         payload: Map<String, Any>? = null): Int =
         withContext(Dispatchers.IO) {

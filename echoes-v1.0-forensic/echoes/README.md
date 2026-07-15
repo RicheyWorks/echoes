@@ -17,17 +17,19 @@ Explores **agent systems with strong auditability** — every decision is hash-c
 - `merkle_root()` and Merkle proof generation/verification
 - Comprehensive unit tests
 - Built-in tamper detection demo with structured events
-- **Real event sources** via `sensor.rs` — `FileWatcher` (inotify/kqueue/ReadDirectoryChangesW), `ProcessScanner`, `CompositeSource`
+- **Real event sources** via `sensor.rs` — `FileWatcher` (inotify/kqueue/ReadDirectoryChangesW), `ProcessScanner`, `NetScanner` (connection-table diff), `AuthWatcher` (auth-log tail), `CompositeSource` — all four `SecurityEvent` variants have live sensors
 - **Remote persistence** — `--remote-store URL` persists memory to an [automaton](https://github.com/RicheyWorks/echoes/tree/main/automaton) server; supports cross-machine resume
 
 ## CLI (v1.1)
 
 ```
-echoes run     [--db PATH] [--ticks N] [--name NAME] [--goal TEXT]
-               [--watch PATH] [--procs]
+echoes run     [--config PATH]
+               [--db PATH] [--ticks N] [--name NAME] [--goal TEXT]
+               [--watch PATH] [--procs] [--net] [--auth [PATH]]
                [--remote-store URL] [--token TOKEN]
 echoes verify  [--db PATH] [--name NAME]
-echoes report  [--db PATH] [--name NAME] [--json]
+echoes report  [--db PATH] [--name NAME] [--json] [--continuity]
+echoes prune   [--db PATH] [--name NAME] --keep-last N
 ```
 
 ### Basic usage
@@ -66,12 +68,94 @@ Scans for newly-spawned processes each tick and records
 `SecurityEvent::ProcessExecution` entries. Reads `/proc/<pid>/comm` on Linux;
 runs `ps -eo pid,comm` on macOS. No-op on other platforms.
 
+**Network connection scanner** (ADR-002 Phase 8a):
+```bash
+cargo run -- run --ticks 20 --net
+```
+Diffs the OS connection table each tick and records
+`SecurityEvent::NetworkConnection` entries for new established connections.
+Parses `/proc/net/tcp{,6}` on Linux; runs `netstat` on macOS/Windows.
+Unprivileged by design — connection metadata only, no packet capture.
+
+**Auth-log watcher** (ADR-002 Phase 8b):
+```bash
+cargo run -- run --ticks 20 --auth              # auto-detect the auth log
+cargo run -- run --ticks 20 --auth /var/log/auth.log
+```
+Tails `/var/log/auth.log` (Debian/Ubuntu) or `/var/log/secure` (RHEL) and
+records `SecurityEvent::Authentication` entries for sshd accepts/failures
+and PAM authentication failures. Requires membership in the `adm` group —
+`sudo usermod -aG adm $USER` — **not** root. Linux-first; on macOS/Windows
+the watcher declines gracefully.
+
 **Combined**:
 ```bash
 cargo run --features watch -- run --ticks 50 \
     --watch /var/log \
     --procs \
+    --net \
+    --auth \
     --db /var/lib/echoes/monitor.db
+```
+
+### Offline state-diff (ADR-002 Phase 9a)
+
+Chained micro-runs leave windows where no process is watching. The manifest
+closes most of that gap: at the end of every `run` with `--watch PATH`, the
+tree is snapshotted (path, size, mtime, **SHA-256** — so timestomping doesn't
+evade it) into the DB. The next run diffs before live watching begins and
+records synthetic `FileAccess` events:
+
+```
+file changed-while-offline /etc/passwd
+file created-while-offline /etc/cron.d/backdoor
+file deleted-while-offline /var/log/auth.log
+```
+
+Works even in builds without the `watch` feature — micro-run monitoring
+needs only the manifest. Size the tick count generously: offline events
+drain one per tick ahead of live sensors.
+
+### Continuity report (ADR-002 Phase 9c)
+
+Micro-run monitoring claims *logical* continuity — `--continuity` makes that
+inspectable instead of implied:
+
+```
+--- Continuity for Mon ---
+  Episodes: 3 (3 clean, 0 interrupted)
+  [1] ticks    0-20   3s
+       gap 296s
+  [2] ticks   20-40   3s
+  ...
+  Live 9s of 605s span | offline-diff events: 2
+```
+
+Every `run` records an episode (wall-clock + tick boundaries); interrupted
+episodes (crashes) show as such. With `--json`, a `continuity` object is
+added to the report.
+
+### Config file (ADR-002 Phase 8d)
+
+The sensor flags outgrew themselves; `--config` loads them from TOML instead.
+CLI flags always override the file; boolean sensors are enabled by either.
+Unknown keys fail loudly — a typo must not silently disable a sensor.
+
+```toml
+# echoes.toml — everything is optional
+db    = "/var/lib/echoes/monitor.db"
+name  = "Monitor"
+ticks = 50
+watch = "/var/log"            # needs --features watch
+procs = true
+net   = true
+auth  = true                  # or an explicit path: auth = "/var/log/auth.log"
+remote_store = "http://192.168.1.10:8080"
+```
+
+```bash
+echoes run --config echoes.toml            # everything from the file
+echoes run --config echoes.toml --ticks 5  # flag wins over file
 ```
 
 ### Remote persistence (Option C)

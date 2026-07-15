@@ -5,5 +5,7 @@
 //! `echoes` binary (`src/main.rs`) is a thin CLI over this library.
 
 pub mod agent;
+pub mod config;
+pub mod manifest;
 pub mod sensor;
 pub mod store;

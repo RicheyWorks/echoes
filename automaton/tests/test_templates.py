@@ -28,6 +28,8 @@ TEMPLATES_ROOT = _templates.TEMPLATES_ROOT
 EXPECTED_SLUGS = {
     "agent/claude-loop",
     "agent/echoes-daily",
+    "agent/echoes-monitor",
+    "agent/echoes-verify",
     "backup/home-folder",
     "dev/docker-prune",
     "dev/git-mirror",
@@ -45,9 +47,9 @@ EXPECTED_SLUGS = {
 # --------------------------------------------------------------------------- #
 
 class TestDiscover:
-    def test_finds_all_ten_templates(self):
+    def test_finds_all_templates(self):
         metas = _templates.discover()
-        assert len(metas) == 11
+        assert len(metas) == 13
 
     def test_slugs_match_expected_set(self):
         slugs = {m.slug for m in _templates.discover()}

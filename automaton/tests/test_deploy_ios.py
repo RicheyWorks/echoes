@@ -43,6 +43,7 @@ def test_required_swift_files_exist():
         "Sources/AutomatonApp/Screens/RunsListView.swift",
         "Sources/AutomatonApp/Screens/RunDetailView.swift",
         "Sources/AutomatonApp/Screens/WorkflowsView.swift",
+        "Sources/AutomatonApp/Screens/AgentsView.swift",
         "Sources/AutomatonApp/Screens/SettingsView.swift",
     ]
     for rel in expected:
@@ -56,6 +57,8 @@ EXPECTED_CLIENT_METHODS = [
     "runs",
     "runDetail",
     "workflows",
+    "agents",
+    "agentEntries",
     "trigger",
     "signal",
     "cancel",
@@ -106,6 +109,7 @@ def test_run_status_enum_matches_server():
     ("Screens/RunsListView.swift", "RunsListView"),
     ("Screens/RunDetailView.swift", "RunDetailView"),
     ("Screens/WorkflowsView.swift", "WorkflowsView"),
+    ("Screens/AgentsView.swift", "AgentsView"),
     ("Screens/SettingsView.swift", "SettingsView"),
 ])
 def test_screen_declares_view(file, struct_name):

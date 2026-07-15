@@ -39,6 +39,7 @@ def test_empty_db_has_all_families(store):
     assert "# TYPE automaton_runs_active gauge" in out
     assert "# TYPE automaton_queue_depth gauge" in out
     assert "# TYPE automaton_cron_triggers gauge" in out
+    assert "# TYPE automaton_integrity_failures_total counter" in out
     assert "# TYPE automaton_db_size_bytes gauge" in out
 
 
@@ -73,6 +74,46 @@ def test_run_counts_reflect_db_state(store):
     assert 'automaton_runs_total{status="failed"} 0' in out
     assert 'automaton_runs_active{status="pending"} 0' in out
     assert 'automaton_runs_active{status="running"} 0' in out
+
+
+def test_integrity_failures_zero_on_empty_db(store):
+    conn, path = store
+    out = _m.collect(conn, path)
+    assert "automaton_integrity_failures_total 0" in out
+
+
+def test_integrity_failures_counts_failed_verify_steps(store):
+    """A failed step whose error carries the stable integrity-FAILED message
+    (raised by steps.py's _parse_verify_output) increments the counter;
+    unrelated failed steps do not."""
+    conn, path = store
+    conn.execute(
+        "INSERT INTO workflow_def (name, version, spec_json) "
+        "VALUES ('echoes-verify', 1, '{}')"
+    )
+    def_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "INSERT INTO run (workflow_def_id, status, trigger_kind) "
+        "VALUES (?, 'failed', 'manual')",
+        (def_id,),
+    )
+    run_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "INSERT INTO step (run_id, name, status, error_json, idempotency_key) "
+        "VALUES (?, 'verify_integrity', 'failed', ?, 'k1')",
+        (run_id,
+         '{"type": "StepError", "message": "echoes_agent verify: '
+         'hash-chain integrity FAILED for agent \'Echo\'"}'),
+    )
+    conn.execute(
+        "INSERT INTO step (run_id, name, status, error_json, idempotency_key) "
+        "VALUES (?, 'other', 'failed', ?, 'k2')",
+        (run_id, '{"type": "StepError", "message": "network timeout"}'),
+    )
+    conn.commit()
+
+    out = _m.collect(conn, path)
+    assert "automaton_integrity_failures_total 1" in out
 
 
 def test_queue_depth_counts_pending_steps(store):

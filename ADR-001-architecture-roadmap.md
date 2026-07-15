@@ -1,8 +1,8 @@
 # ADR-001: Architecture Audit & Phased Roadmap
 
-**Status:** Implemented (Phases 1–6 complete)  
+**Status:** Implemented (Phases 1–6 complete) — continued in [ADR-002](ADR-002-operational-roadmap.md)  
 **Date:** 2026-05-23  
-**Updated:** 2026-07-09  
+**Updated:** 2026-07-14  
 **Decider:** Richmond (sole sign-off)  
 **Scope:** Both sub-projects — `automaton` (Python automation engine) and `echoes` (Rust agent integrity framework)
 
@@ -204,7 +204,7 @@ With auth closed, Tailscale access from mobile/laptop becomes safe to enable.
 
 **4c — Real event sources (1 week):** Replace the `SecurityEvent::Custom("...")` stubs with actual data. Wire `FileAccess` to `inotify` (Linux) / `kqueue` (macOS) / ReadDirectoryChangesW (Windows) via the `notify` crate. Wire `ProcessExecution` to a periodic `/proc` scan (Linux) or `sysctl` (macOS). `NetworkConnection` and `Authentication` can stay as manually-logged events for now — those require elevated privileges that complicate deployment.
 
-**4d — JSON output contract:** `echoes report --json` emits a document with: `agent_name`, `goal`, `memory_len`, `merkle_root` (hex), `integrity_ok` (bool), `entries` array. This becomes the contract for Phase 5 integration with automaton.
+**4d — JSON output contract:** `echoes report --json` emits a document with: `agent`, `goal`, `entries` (count), `merkle_root` (hex), `integrity` ("ok"/"failed"), `memory` (array of entries). This becomes the contract for Phase 5 integration with automaton. *(Wording corrected 2026-07-14 to match the shipped contract — see known issue 6.)*
 
 **Success criteria:** `echoes run --ticks 100 --db ./echo.db && echoes verify --db ./echo.db` exits 0 and prints "Integrity: PASSED" after the process has been killed and restarted mid-run. `echoes report --json` emits valid JSON that another tool can parse.
 
@@ -322,11 +322,11 @@ Surfaced during the v1.1 / v0.5.0 release pass:
 
 3. **Workflow relocation broke `test_deploy_ci.py` (found 2026-07-09, audit pass).** The 49 structural CI tests resolved workflow paths as `automaton/.github/workflows/` and all failed after the relocation. **Resolved:** `WORKFLOWS` in `tests/test_deploy_ci.py` now points at the repository root. Full suite: 812 passed, 15 skipped (Postgres integration tests skip without `AUTOMATON_TEST_PG_URL`).
 
-4. **Rust 1.97 clippy regressions in `echoes-wasm`.** New lints (`manual_is_multiple_of` in `merkle_proof`, `bool_assert_comparison` in tests) failed `-D warnings`. **Resolved** with no behavior change; native parity tests and the `wasm32-unknown-unknown` release build both pass. Note: the `echoes.yml` clippy job only lints the `echoes` crate — consider adding a clippy step to the wasm parity job so toolchain-driven lint breakage is caught in CI.
+4. **Rust 1.97 clippy regressions in `echoes-wasm`.** New lints (`manual_is_multiple_of` in `merkle_proof`, `bool_assert_comparison` in tests) failed `-D warnings`. **Resolved** with no behavior change; native parity tests and the `wasm32-unknown-unknown` release build both pass. **Resolved (follow-up 2026-07-14):** the wasm parity job in `echoes.yml` now runs `cargo clippy --all-targets -- -D warnings` on `echoes-wasm`, so toolchain-driven lint breakage is caught in CI.
 
-5. **`v0.4.0` tag missing.** Phase 1 records v0.4.0 as tagged and published, but no `v0.4.0` tag exists locally or on origin (only v0.3.0 and v0.5.0). Harmless if v0.4.0 was published to PyPI before the tag was lost, but worth re-creating for provenance.
+5. **`v0.4.0` tag missing.** Phase 1 records v0.4.0 as tagged and published, but no `v0.4.0` tag exists locally or on origin (only v0.3.0 and v0.5.0). **Resolved (2026-07-14):** annotated tag `v0.4.0` recreated at `79c8a19` ("Phase 26", 2026-05-23) — the feature-complete point matching the CHANGELOG `[0.4.0]` release date. Note: history contains no version-bump commit for 0.4.0 (`pyproject.toml` reads 0.3.0 in that tree); the tag message documents this. Push with `git push origin v0.4.0`.
 
-6. **Doc drift — Phase 4d JSON contract.** The ADR lists keys `agent_name`/`memory_len`/`integrity_ok`; the shipped contract (consistent across `echoes report --json` and `automaton/steps.py`) is `agent`/`memory`/`integrity` plus `goal`, `merkle_root`, `entries`. The code is internally consistent; this document's Phase 4d wording is the stale side.
+6. **Doc drift — Phase 4d JSON contract.** The ADR lists keys `agent_name`/`memory_len`/`integrity_ok`; the shipped contract (consistent across `echoes report --json` and `automaton/steps.py`) is `agent`/`memory`/`integrity` plus `goal`, `merkle_root`, `entries`. The code is internally consistent; this document's Phase 4d wording is the stale side. **Resolved (2026-07-14):** Phase 4d wording updated to the shipped contract.
 
 7. **CI hardening pass (2026-07-09/10) — first fully green board.** The first
    real executions of every workflow surfaced, in order: a truncated

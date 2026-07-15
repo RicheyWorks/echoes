@@ -45,7 +45,8 @@ inside ordinary automation runs. In the other direction, `echoes run
 | `echoes-v1.0-forensic/` | Current Rust workspace (core + wasm) |
 | `echoes-v0.8-enhanced/`, `echoes (1)/` | Earlier iterations kept for history |
 | `.github/workflows/` | CI: `test` (3 OS × py3.10–3.12 + Postgres), `echoes` (fmt/clippy/test + wasm parity), `mobile` (iOS + Android builds), `docs`, `release` |
-| `ADR-001-architecture-roadmap.md` | Architecture audit, phased roadmap, and running known-issues log |
+| `ADR-001-architecture-roadmap.md` | Architecture audit, phased roadmap (phases 1–6, complete), and known-issues log |
+| `ADR-002-operational-roadmap.md` | Follow-on roadmap: ops hardening, full sensor coverage, continuous monitoring, mobile catch-up (phases 7–10) |
 
 ## Development
 

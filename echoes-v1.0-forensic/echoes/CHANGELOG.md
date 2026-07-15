@@ -9,7 +9,75 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `echoes --version` printed a hardcoded `1.0.0`; it now derives from
+  `Cargo.toml` (`CARGO_PKG_VERSION`), so it can never drift again.
+
 ### Added
+- **Continuity report (ADR-002 Phase 9c)** — `echoes report --continuity`
+  shows episode boundaries (every `run` now records wall-clock + tick range
+  into a new `episodes` table), gaps between micro-runs, interrupted runs,
+  live-vs-span coverage, and the offline-diff event count. JSON reports gain
+  a `continuity` object. Makes micro-run "logical continuity" inspectable
+  instead of implied.
+- **Offline state-diff manifests (ADR-002 Phase 9a)** — every `run --watch
+  PATH` snapshots the watched tree (size, mtime, SHA-256) into a new
+  `file_manifest` table at exit; the next run diffs before live watching
+  begins and records synthetic `FileAccess` events
+  (`created/changed/deleted-while-offline`) into the hash chain. SHA-256
+  content hashing defeats timestomping; symlinks are not followed; works in
+  builds without the `watch` feature. New `manifest.rs` module +
+  `QueuedSource` sensor.
+- **`echoes.toml` config file (ADR-002 Phase 8d)** — `echoes run --config
+  PATH` loads db/name/goal/ticks/sensors/remote-store from TOML (new
+  `config.rs` module, `toml` dep). CLI flags override the file; boolean
+  sensors are enabled by either side; unknown keys are rejected loudly.
+- **Windows watch CI (ADR-002 Phase 8c)** — the `test-watch` job now runs a
+  ubuntu + windows matrix, exercising the ReadDirectoryChangesW backend; a
+  feature-gated `FileWatcher` test pins the operation vocabulary across
+  backends without depending on CI event-delivery timing.
+- **`AuthWatcher` — real `Authentication` events (ADR-002 Phase 8b)** —
+  `echoes run --auth [PATH]` tails the system auth log (auto-detects
+  `/var/log/auth.log` / `/var/log/secure`) and records sshd
+  accepts/failures (incl. invalid-user attempts) and PAM authentication
+  failures. Rotation-aware, partial-line-safe, only-new-lines semantics.
+  Requires `adm` group membership, not root; declines gracefully where no
+  readable log exists. With this, **all four `SecurityEvent` variants have
+  live sensors.**
+- **`NetScanner` — real `NetworkConnection` events (ADR-002 Phase 8a)** —
+  `echoes run --net` diffs the OS connection table each tick and records new
+  established connections (src `ip:port`, dst ip, dst port). Parses
+  `/proc/net/tcp{,6}` directly on Linux (no subprocess); `netstat` on
+  macOS/Windows. Unprivileged by design: metadata only, no packet capture, no
+  root. Pure parsers are platform-independent and unit-tested everywhere,
+  plus a live loopback-capture test on Linux.
+- **Prebuilt release binaries (ADR-002 Phase 7d)** — `echoes-v*` releases now
+  attach binaries for linux x86_64/aarch64, macOS arm64, and Windows x86_64,
+  built `--release --features watch` so filesystem event capture works out of
+  the box. No Rust toolchain needed to deploy.
+- **Publishing pipeline (ADR-002 Phase 7c)** — pushing an `echoes-v*` tag now
+  publishes the `echoes` crate to crates.io and the wasm bindings to npm as
+  `@richeyworks/echoes-integrity`, gated on clippy + tests for both crates
+  (`release.yml`). Cargo.toml gained the crates.io metadata (description,
+  license, repository, keywords, categories) and a `LICENSE` file; a
+  tag-vs-Cargo.toml version guard prevents mismatched releases. Requires the
+  `CARGO_REGISTRY_TOKEN` and `NPM_TOKEN` repo secrets.
+- **Chain-aware pruning (`echoes prune --keep-last N`)** — seals all but the
+  last N entries behind a checkpoint row (ADR-002 Phase 7b). The checkpoint
+  records the pruned prefix's head hash (which becomes the trusted genesis
+  for the live chain), a Merkle root attesting the deleted entries, and a
+  checkpoint hash; checkpoint rows are themselves hash-chained, so forging
+  any sealed prefix breaks every later checkpoint. `verify`, `report`, and
+  `run` are all checkpoint-aware; `prune` refuses to run if the chain does
+  not verify first. Sealed entries are unrecoverable by design — their
+  integrity attestation survives. `report --json` gains `sealed_entries`,
+  `sealed_through_tick`, `sealed_merkle_root`, and `checkpoint_hash` fields
+  when a checkpoint exists (existing fields unchanged).
+- `Agent::restore_from(...)` / `Agent.base_hash` — chain verification
+  against a non-zero trusted genesis; `agent::checkpoint_hash(...)` is the
+  sealing primitive. `SqliteStore` gains `verify_checkpoints`, `chain_base`,
+  and `prune` (transactional). New `checkpoints` table (created lazily;
+  existing DBs are unaffected until first prune).
 - **`echoes-wasm` crate** — WebAssembly bindings for the hash-chain and
   Merkle-tree integrity primitives, publishable as
   `@richeyworks/echoes-integrity` on npm:

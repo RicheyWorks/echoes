@@ -1,4 +1,4 @@
-// App entry point. Three-tab structure: Runs, Workflows, Settings.
+// App entry point. Four-tab structure: Runs, Workflows, Agents, Settings.
 
 import SwiftUI
 
@@ -14,6 +14,9 @@ struct AutomatonApp: App {
 
                 WorkflowsView()
                     .tabItem { Label("Workflows", systemImage: "flowchart") }
+
+                AgentsView()
+                    .tabItem { Label("Agents", systemImage: "checkmark.shield") }
 
                 SettingsView()
                     .tabItem { Label("Settings", systemImage: "gearshape") }

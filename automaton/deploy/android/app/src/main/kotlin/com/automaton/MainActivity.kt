@@ -1,5 +1,5 @@
-// Entry point. A bottom NavigationBar with three tabs mirrors the iOS
-// TabView: Runs, Workflows, Settings.
+// Entry point. A bottom NavigationBar with four tabs mirrors the iOS
+// TabView: Runs, Workflows, Agents, Settings.
 
 package com.automaton
 
@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
@@ -45,13 +46,14 @@ private fun dynamicColorScheme() = MaterialTheme.colorScheme  // system default
 private sealed class Tab(val route: String, val label: String) {
     object Runs      : Tab("runs",      "Runs")
     object Workflows : Tab("workflows", "Workflows")
+    object Agents    : Tab("agents",    "Agents")
     object Settings  : Tab("settings",  "Settings")
 }
 
 @Composable
 private fun AutomatonApp(settings: Settings) {
     val navController = rememberNavController()
-    val tabs = listOf(Tab.Runs, Tab.Workflows, Tab.Settings)
+    val tabs = listOf(Tab.Runs, Tab.Workflows, Tab.Agents, Tab.Settings)
     val backStack by navController.currentBackStackEntryAsState()
     val currentRoute = backStack?.destination?.route
 
@@ -72,9 +74,10 @@ private fun AutomatonApp(settings: Settings) {
                         },
                         icon = {
                             when (tab) {
-                                Tab.Runs      -> Icon(Icons.Filled.List,      tab.label)
-                                Tab.Workflows -> Icon(Icons.Filled.PlayArrow, tab.label)
-                                Tab.Settings  -> Icon(Icons.Filled.Settings,  tab.label)
+                                Tab.Runs      -> Icon(Icons.Filled.List,        tab.label)
+                                Tab.Workflows -> Icon(Icons.Filled.PlayArrow,   tab.label)
+                                Tab.Agents    -> Icon(Icons.Filled.CheckCircle, tab.label)
+                                Tab.Settings  -> Icon(Icons.Filled.Settings,    tab.label)
                             }
                         },
                         label = { Text(tab.label) },
@@ -99,6 +102,9 @@ private fun AutomatonApp(settings: Settings) {
             }
             composable(Tab.Workflows.route) {
                 WorkflowsScreen(settings)
+            }
+            composable(Tab.Agents.route) {
+                AgentsScreen(settings)
             }
             composable(Tab.Settings.route) {
                 SettingsScreen(settings)

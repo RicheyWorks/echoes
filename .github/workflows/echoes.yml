@@ -69,12 +69,34 @@ jobs:
               assert d['entries']==5, f'expected 5 entries: {d}'; \
               print('smoke OK — entries:', d['entries'], 'root:', d['merkle_root'][:16])"
 
+      - name: Smoke test — prune + verify + resume (ADR-002 Phase 7b)
+        run: |
+          ./target/debug/echoes prune --db /tmp/smoke.db --name CI --keep-last 2
+          ./target/debug/echoes verify --db /tmp/smoke.db --name CI
+          ./target/debug/echoes run --ticks 3 --db /tmp/smoke.db --name CI
+          ./target/debug/echoes verify --db /tmp/smoke.db --name CI
+          ./target/debug/echoes report --json --db /tmp/smoke.db --name CI \
+            | python3 -c "import sys,json; d=json.load(sys.stdin); \
+              assert d['integrity']=='ok', f'bad integrity: {d}'; \
+              assert d['entries']==5, f'expected 5 live entries: {d}'; \
+              assert d['sealed_entries']==3, f'expected 3 sealed: {d}'; \
+              print('prune smoke OK — live:', d['entries'], 'sealed:', d['sealed_entries'])"
+
   # ------------------------------------------------------------------ #
-  # Test with the notify filesystem watcher feature enabled             #
+  # Test with the notify filesystem watcher feature enabled.            #
+  # Linux (inotify) + Windows (ReadDirectoryChangesW) — ADR-002 8c.     #
   # ------------------------------------------------------------------ #
   test-watch:
-    name: cargo test --features watch (Linux)
-    runs-on: ubuntu-latest
+    name: cargo test --features watch (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: echoes-v1.0-forensic/echoes
+        shell: bash
 
     steps:
       - uses: actions/checkout@v4
@@ -153,8 +175,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust stable
+      - name: Install Rust stable + clippy
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache cargo
         uses: actions/cache@v4
@@ -168,3 +192,6 @@ jobs:
 
       - name: cargo test (native parity guard)
         run: cargo test --locked
+
+      - name: cargo clippy (catch toolchain lint regressions)
+        run: cargo clippy --locked --all-targets -- -D warnings

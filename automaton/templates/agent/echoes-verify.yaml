@@ -1,0 +1,41 @@
+# Scheduled hash-chain integrity verification for an echoes agent DB.
+# Description: Runs `echoes verify` against ECHOES_DB every hour. The step
+#   fails (raising StepError) if the chain does not verify, which marks the
+#   run failed and fires the notification hook (AUTOMATON_NOTIFY_ON_FAILURE).
+#   `urgent: true` makes that alert bypass quiet hours — a tampered chain
+#   should wake you up. Failures also increment the
+#   automaton_integrity_failures_total Prometheus counter.
+# Required secrets: none
+# Required env: ECHOES_DB     (path to echoes SQLite DB, default: echoes.db)
+#               ECHOES_AGENT  (agent name, default: Echo)
+#               ECHOES_BINARY (path to echoes binary, optional -- auto-discovered)
+# Cron: "0 * * * *"   (hourly; tune to taste — see ADR-002 Phase 7a)
+# Last verified: 2026-07-14
+
+name: echoes-verify
+
+urgent: true
+
+triggers:
+  - cron: "0 * * * *"
+
+steps:
+  # Reload the chain from disk and assert integrity. A failure here is the
+  # entire point of this workflow: it means the stored memory chain no longer
+  # verifies — possible tamper, corruption, or a broken disk.
+  - name: verify_integrity
+    type: echoes_agent
+    action: verify
+    db: "${{ env.ECHOES_DB | default('echoes.db') }}"
+    agent_name: "${{ env.ECHOES_AGENT | default('Echo') }}"
+    binary: "${{ env.ECHOES_BINARY | default('') }}"
+
+  # Record the current Merkle root in the run history so successive runs
+  # leave an inspectable trail of attested roots in automaton's event log.
+  - name: attest_root
+    type: echoes_agent
+    needs: [verify_integrity]
+    action: report
+    db: "${{ env.ECHOES_DB | default('echoes.db') }}"
+    agent_name: "${{ env.ECHOES_AGENT | default('Echo') }}"
+    binary: "${{ env.ECHOES_BINARY | default('') }}"

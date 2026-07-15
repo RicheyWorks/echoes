@@ -119,6 +119,37 @@ class TestRunAction:
         assert "--name" in cmd and "Agent7" in cmd
         assert "--goal" in cmd and "patrol" in cmd
 
+    def test_run_passes_sensor_and_config_flags(self):
+        """ADR-002 Phase 9b: config/watch/procs/net/auth passthrough."""
+        with patch("subprocess.run", return_value=_mock_proc(0, _RUN_STDOUT)) as m:
+            run_step(_spec(
+                action="run",
+                config="/etc/echoes.toml",
+                watch="/var/log",
+                procs="true",     # env-templated strings must parse
+                net=True,
+                auth="/var/log/auth.log",
+            ), "key-9b1")
+        cmd = m.call_args[0][0]
+        assert ["--config", "/etc/echoes.toml"] == cmd[cmd.index("--config"):cmd.index("--config") + 2]
+        assert ["--watch", "/var/log"] == cmd[cmd.index("--watch"):cmd.index("--watch") + 2]
+        assert "--procs" in cmd
+        assert "--net" in cmd
+        assert ["--auth", "/var/log/auth.log"] == cmd[cmd.index("--auth"):cmd.index("--auth") + 2]
+
+    def test_run_auth_true_is_bare_flag_and_false_strings_disable(self):
+        with patch("subprocess.run", return_value=_mock_proc(0, _RUN_STDOUT)) as m:
+            run_step(_spec(action="run", auth=True), "key-9b2")
+        cmd = m.call_args[0][0]
+        assert cmd[cmd.index("--auth") + 1 :][:1] != ["true"], "bare --auth expected"
+        assert "--auth" in cmd
+
+        with patch("subprocess.run", return_value=_mock_proc(0, _RUN_STDOUT)) as m:
+            run_step(_spec(action="run", auth="false", procs="false", net="", watch=""), "key-9b3")
+        cmd = m.call_args[0][0]
+        for flag in ("--auth", "--procs", "--net", "--watch", "--config"):
+            assert flag not in cmd, f"{flag} must be omitted when disabled"
+
     def test_run_nonzero_exit_raises_step_error(self):
         proc = _mock_proc(returncode=1, stderr="DB locked")
         with patch("subprocess.run", return_value=proc):

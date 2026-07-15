@@ -9,7 +9,40 @@ Version numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+- **Agents tab in the native clients (ADR-002 Phase 10a/10b)** — both the
+  SwiftUI and Compose apps gain a fourth tab: read-only list of forensic
+  agents (tick, last-seen), with a detail view showing a client-side
+  chain-linkage badge (linked / BROKEN / no entries — same scope as the
+  web card), latest hash, entry count, and recent memory. New
+  `agents()` / `agentEntries()` client methods on both platforms.
+- **Forensics card on the dashboard (ADR-002 Phase 10c)** — when agents are
+  registered, the run-list page shows one row per agent (tick, last hash,
+  last-seen) with a chain-linkage badge (`chain linked` / `chain BROKEN` /
+  `no entries`; linkage-only — content hashes remain echoes' job), plus an
+  integrity-failure count and a 14-day sparkline matching the
+  `automaton_integrity_failures_total` predicate. New `agents.latest_entry`
+  and `agents.chain_linkage_ok` helpers.
+- **echoes step output badges in run detail (ADR-002 Phase 10b, web)** —
+  `echoes_agent` outputs now render an integrity badge (green/red), a
+  truncated Merkle root with copy button, entry and sealed counts, instead
+  of a raw JSON dump.
+- **`agent/echoes-monitor` workflow template (ADR-002 Phase 9b)** —
+  continuous monitoring via chained micro-runs: every 5 minutes, advance a
+  persistent agent with real sensors, verify the chain (urgent alert on
+  failure), and attest the Merkle root into run history. Offline windows
+  between runs are covered by echoes' Phase 9a state-diff.
+- **`echoes_agent` step: sensor/config passthrough** — `run` action now
+  accepts `config`, `watch`, `procs`, `net`, and `auth` spec fields
+  (env-templated strings parsed tolerantly) and forwards them as CLI flags.
+- **`agent/echoes-verify` workflow template** — hourly `echoes verify` against
+  `ECHOES_DB`; a chain that no longer verifies fails the run and fires the
+  notification hook with `urgent: true` (bypasses quiet hours). A follow-up
+  `report` step leaves the attested Merkle root in the run history.
+  (ADR-002 Phase 7a)
+- **`automaton_integrity_failures_total` Prometheus counter** — counts failed
+  `echoes_agent` verify steps (matched on the stable integrity-FAILED
+  StepError message) so integrity failures are scrapeable and alertable.
 
 ---
 

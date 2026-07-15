@@ -285,6 +285,92 @@ def test_release_github_release_needs_publish():
         "github-release job must run after publish-pypi"
 
 
+# ------------------------------------------------------------------ #
+# release.yml — echoes-v* family (ADR-002 Phase 7c)                   #
+# ------------------------------------------------------------------ #
+
+def test_release_triggers_on_echoes_tag():
+    cfg = _load(RELEASE_WF)
+    on = cfg.get("on", cfg.get(True, {}))
+    tags = on.get("push", {}).get("tags", [])
+    assert any(t.startswith("echoes-v") for t in tags), \
+        "release.yml must also trigger on echoes-v* tag pushes"
+
+
+def test_release_has_echoes_jobs():
+    cfg = _load(RELEASE_WF)
+    jobs = cfg.get("jobs", {})
+    for job in ("test-echoes", "publish-crate", "publish-npm",
+                "build-binaries", "github-release-echoes"):
+        assert job in jobs, f"release.yml must have a {job} job"
+
+
+def test_release_echoes_publish_jobs_gated_on_tests():
+    cfg = _load(RELEASE_WF)
+    for job in ("publish-crate", "publish-npm", "build-binaries"):
+        needs = cfg["jobs"][job].get("needs", [])
+        needs_list = [needs] if isinstance(needs, str) else needs
+        assert "test-echoes" in needs_list, \
+            f"{job} must depend on test-echoes"
+
+
+def test_release_python_jobs_skip_echoes_tags():
+    """The Python test job must not run for echoes-v* tags (its dependents
+    are skipped transitively via needs)."""
+    cfg = _load(RELEASE_WF)
+    cond = cfg["jobs"]["test"].get("if", "")
+    assert "echoes-" in cond, \
+        "python test job must be conditioned to skip echoes-* tags"
+
+
+def test_release_echoes_jobs_skip_python_tags():
+    cfg = _load(RELEASE_WF)
+    for job in ("test-echoes", "publish-crate", "publish-npm",
+                "build-binaries", "github-release-echoes"):
+        cond = cfg["jobs"][job].get("if", "")
+        assert "echoes-v" in cond, \
+            f"{job} must be conditioned on echoes-v* tags"
+
+
+def test_release_publish_crate_uses_registry_token():
+    cfg = _load(RELEASE_WF)
+    all_text = " ".join(_walk(cfg["jobs"]["publish-crate"]["steps"]))
+    assert "CARGO_REGISTRY_TOKEN" in all_text, \
+        "publish-crate must use the CARGO_REGISTRY_TOKEN secret"
+
+
+def test_release_publish_npm_uses_npm_token():
+    cfg = _load(RELEASE_WF)
+    all_text = " ".join(_walk(cfg["jobs"]["publish-npm"]["steps"]))
+    assert "NPM_TOKEN" in all_text, \
+        "publish-npm must use the NPM_TOKEN secret"
+
+
+def test_release_binaries_cover_all_targets():
+    """ADR-002 Phase 7d: prebuilt binaries for the four supported targets."""
+    cfg = _load(RELEASE_WF)
+    matrix = cfg["jobs"]["build-binaries"]["strategy"]["matrix"]["include"]
+    targets = {m["target"] for m in matrix}
+    assert targets == {
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        "aarch64-apple-darwin",
+        "x86_64-pc-windows-msvc",
+    }, f"unexpected binary target set: {targets}"
+
+
+def test_release_echoes_github_release_attaches_binaries():
+    cfg = _load(RELEASE_WF)
+    job = cfg["jobs"]["github-release-echoes"]
+    needs = job.get("needs", [])
+    needs_list = [needs] if isinstance(needs, str) else needs
+    assert "build-binaries" in needs_list, \
+        "github-release-echoes must wait for build-binaries"
+    all_text = " ".join(_walk(job["steps"]))
+    assert "binaries/" in all_text, \
+        "github-release-echoes must download and attach the binaries"
+
+
 
 def test_release_marks_prerelease_for_rc_tags():
     cfg = _load(RELEASE_WF)

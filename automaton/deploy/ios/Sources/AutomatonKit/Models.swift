@@ -71,6 +71,52 @@ public struct WorkflowDef: Codable, Identifiable, Sendable {
     public let workflowDefId: Int?
 }
 
+// MARK: - forensic agents (ADR-002 Phase 10a)
+
+public struct AgentSummary: Codable, Identifiable, Sendable {
+    public var id: String { name }
+    public let name: String
+    public let goal: String?
+    public let tick: Int
+    public let updatedAt: String?
+}
+
+/// One echoes memory entry as stored by the remote-store API. The `event`
+/// field is deliberately not decoded — it may be a string or a structured
+/// object, and the mobile client only needs the chain fields.
+public struct AgentMemoryEntry: Codable, Identifiable, Sendable {
+    public var id: Int { tick }
+    public let tick: Int
+    public let action: String?
+    public let note: String?
+    public let hash: String
+    public let prevHash: String
+}
+
+public struct AgentEntriesResponse: Codable, Sendable {
+    public let entries: [AgentMemoryEntry]
+    public let count: Int?
+}
+
+public enum ChainLinkage: Sendable {
+    case linked
+    case broken
+    case empty
+
+    /// Client-side linkage check, mirroring the server's
+    /// ``agents.chain_linkage_ok``: prev-hash linkage only — content-hash
+    /// verification remains `echoes verify`'s job.
+    public static func check(_ entries: [AgentMemoryEntry]) -> ChainLinkage {
+        guard !entries.isEmpty else { return .empty }
+        var prev = String(repeating: "0", count: 64)
+        for e in entries {
+            if e.prevHash != prev { return .broken }
+            prev = e.hash
+        }
+        return .linked
+    }
+}
+
 public struct TriggerResult: Codable, Sendable {
     public let runId: Int
 }

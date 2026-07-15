@@ -76,6 +76,31 @@ pub fn short_hash(hash: &Hash) -> String {
     format!("{:02x}{:02x}..{:02x}{:02x}", hash[0], hash[1], hash[30], hash[31])
 }
 
+/// Hash sealing a pruned prefix of the memory chain (see ADR-002 Phase 7b).
+///
+/// Binds the previous checkpoint hash (zeros for the first checkpoint), the
+/// agent name, the pruned range, the head hash of the pruned prefix, and the
+/// Merkle root over the pruned entries. Checkpoints therefore form their own
+/// hash chain: forging or reordering any sealed prefix changes every later
+/// checkpoint hash.
+pub fn checkpoint_hash(
+    prev_checkpoint: &Hash,
+    agent_name: &str,
+    pruned_through_tick: u32,
+    entries_sealed: u32,
+    head: &Hash,
+    merkle_root: &Hash,
+) -> Hash {
+    let mut hasher = Sha256::new();
+    hasher.update(prev_checkpoint);
+    hasher.update(agent_name.as_bytes());
+    hasher.update(pruned_through_tick.to_be_bytes());
+    hasher.update(entries_sealed.to_be_bytes());
+    hasher.update(head);
+    hasher.update(merkle_root);
+    hasher.finalize().into()
+}
+
 // ============================================================
 // Agent action enum
 // ============================================================
@@ -131,6 +156,10 @@ pub struct Agent {
     pub audit_log: Vec<AuditEntry>,
     pub tick: u32,
     pub last_hash: Hash,
+    /// Trusted genesis for chain verification: all zeros for a full chain,
+    /// or the head hash of the last pruned prefix when the store holds a
+    /// checkpoint (see `checkpoint_hash`).
+    pub base_hash: Hash,
 }
 
 impl Agent {
@@ -143,6 +172,7 @@ impl Agent {
             audit_log: Vec::new(),
             tick: 0,
             last_hash: [0u8; 32],
+            base_hash: [0u8; 32],
         };
         agent.audit_log.push(AuditEntry {
             tick: 0,
@@ -156,13 +186,28 @@ impl Agent {
     /// Verifies the full chain before accepting — returns `Err` if integrity
     /// fails, which means the stored memory was tampered with or corrupted.
     pub fn restore(name: &str, goal: &str, entries: Vec<MemoryEntry>) -> Result<Self, String> {
+        Self::restore_from(name, goal, entries, [0u8; 32], 0)
+    }
+
+    /// Like [`restore`](Self::restore), but verifies the chain against a
+    /// non-zero trusted genesis — the head hash of a pruned prefix sealed by
+    /// a checkpoint. `base_tick` is the tick of that head entry, used as the
+    /// starting tick when no live entries remain.
+    pub fn restore_from(
+        name: &str,
+        goal: &str,
+        entries: Vec<MemoryEntry>,
+        base_hash: Hash,
+        base_tick: u32,
+    ) -> Result<Self, String> {
         let mut agent = Agent {
             name: name.to_string(),
             goal: goal.to_string(),
             memory: entries,
             audit_log: Vec::new(),
-            tick: 0,
-            last_hash: [0u8; 32],
+            tick: base_tick,
+            last_hash: base_hash,
+            base_hash,
         };
 
         if !agent.verify_integrity() {
@@ -291,9 +336,10 @@ impl Agent {
         entry
     }
 
-    /// Verify the SHA-256 chain over all in-memory entries.
+    /// Verify the SHA-256 chain over all in-memory entries, starting from
+    /// `base_hash` (all zeros unless restored above a checkpoint).
     pub fn verify_integrity(&self) -> bool {
-        let mut expected_prev = [0u8; 32];
+        let mut expected_prev = self.base_hash;
         for entry in &self.memory {
             if entry.prev_hash != expected_prev {
                 return false;
@@ -530,5 +576,68 @@ mod tests {
 
         // Out-of-range indices yield no proof.
         assert!(tree.generate_proof(agent.memory.len()).is_none());
+    }
+
+    #[test]
+    fn restore_from_verifies_against_nonzero_base() {
+        let mut agent = Agent::new("BaseTest", "checkpoint base test");
+        for _ in 0..6 { agent.think(); }
+
+        // Simulate pruning the first 3 entries: the suffix chain must verify
+        // against the head hash of the pruned prefix, not zeros.
+        let base_hash = agent.memory[2].hash;
+        let base_tick = agent.memory[2].tick;
+        let suffix: Vec<MemoryEntry> = agent.memory[3..].to_vec();
+
+        let restored = Agent::restore_from(
+            "BaseTest", "checkpoint base test", suffix.clone(), base_hash, base_tick,
+        ).expect("suffix must verify against pruned-prefix head");
+        assert_eq!(restored.memory_len(), 3);
+        assert_eq!(restored.tick, 6);
+        assert!(restored.verify_integrity());
+
+        // The same suffix must NOT verify against a zero genesis...
+        assert!(Agent::restore("BaseTest", "checkpoint base test", suffix.clone()).is_err());
+
+        // ...nor against the wrong base, nor when tampered.
+        let mut wrong_base = base_hash;
+        wrong_base[0] ^= 0xff;
+        assert!(Agent::restore_from(
+            "BaseTest", "checkpoint base test", suffix.clone(), wrong_base, base_tick,
+        ).is_err());
+
+        let mut tampered = suffix;
+        tampered[1].note = "tampered".to_string();
+        assert!(Agent::restore_from(
+            "BaseTest", "checkpoint base test", tampered, base_hash, base_tick,
+        ).is_err());
+    }
+
+    #[test]
+    fn restore_from_empty_entries_adopts_base_state() {
+        let restored = Agent::restore_from("Empty", "g", vec![], [7u8; 32], 42)
+            .expect("empty suffix is trivially valid");
+        assert_eq!(restored.memory_len(), 0);
+        assert_eq!(restored.tick, 42);
+        assert_eq!(restored.last_hash, [7u8; 32]);
+        assert!(restored.verify_integrity());
+    }
+
+    #[test]
+    fn checkpoint_hash_is_sensitive_to_every_field() {
+        let zeros = [0u8; 32];
+        let head = [1u8; 32];
+        let merkle = [2u8; 32];
+        let base = checkpoint_hash(&zeros, "A", 10, 10, &head, &merkle);
+
+        assert_ne!(base, checkpoint_hash(&[9u8; 32], "A", 10, 10, &head, &merkle));
+        assert_ne!(base, checkpoint_hash(&zeros, "B", 10, 10, &head, &merkle));
+        assert_ne!(base, checkpoint_hash(&zeros, "A", 11, 10, &head, &merkle));
+        assert_ne!(base, checkpoint_hash(&zeros, "A", 10, 11, &head, &merkle));
+        assert_ne!(base, checkpoint_hash(&zeros, "A", 10, 10, &[3u8; 32], &merkle));
+        assert_ne!(base, checkpoint_hash(&zeros, "A", 10, 10, &head, &[4u8; 32]));
+
+        // Deterministic.
+        assert_eq!(base, checkpoint_hash(&zeros, "A", 10, 10, &head, &merkle));
     }
 }

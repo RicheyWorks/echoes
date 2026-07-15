@@ -150,6 +150,25 @@ def collect(conn: sqlite3.Connection,
     out.append("")
 
     # ------------------------------------------------------------------ #
+    # automaton_integrity_failures_total (counter)                        #
+    #                                                                     #
+    # echoes_agent verify steps that failed because the hash chain did    #
+    # not verify. Matches the stable StepError message emitted by         #
+    # steps.py's _parse_verify_output — see ADR-002 Phase 7a.             #
+    # ------------------------------------------------------------------ #
+    integ = conn.execute(
+        "SELECT COUNT(*) FROM step "
+        "WHERE status = 'failed' "
+        "AND error_json LIKE '%hash-chain integrity FAILED%'"
+    ).fetchone()[0]
+    out += _counter(
+        "automaton_integrity_failures_total",
+        "echoes_agent verify steps that failed hash-chain integrity.",
+        [({}, integ)],
+    )
+    out.append("")
+
+    # ------------------------------------------------------------------ #
     # automaton_db_size_bytes (gauge) — omitted for in-memory DBs        #
     # ------------------------------------------------------------------ #
     if db_path is not None:

@@ -52,6 +52,15 @@ public struct AutomatonClient: Sendable {
         return Array(Set(recents.map(\.workflow))).sorted()
     }
 
+    public func agents() async throws -> [AgentSummary] {
+        return try await get("/api/agents")
+    }
+
+    public func agentEntries(_ name: String) async throws -> [AgentMemoryEntry] {
+        let res: AgentEntriesResponse = try await get("/api/agents/\(name)/entries")
+        return res.entries
+    }
+
     public func trigger(_ workflow: String,
                          payload: [String: Any]? = nil) async throws -> Int {
         var body: [String: Any] = [:]

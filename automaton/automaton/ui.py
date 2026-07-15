@@ -224,6 +224,88 @@ def render_mesh_card(mesh_info: dict) -> str:
     )
 
 
+def render_forensics_card(conn) -> str:
+    """Forensics card for the run-list page (ADR-002 Phase 10c).
+
+    One row per registered echoes agent: tick, last-seen, last hash, and a
+    chain-linkage badge (see ``agents.chain_linkage_ok`` for what that does
+    and does not prove). Footer: integrity-failure count from the step
+    history (the data behind ``automaton_integrity_failures_total``) with a
+    14-day mini sparkline. Renders nothing when no agents are registered.
+    """
+    from . import agents as _agents
+
+    try:
+        rows = _agents.list_agents(conn)
+    except Exception:
+        return ""
+    if not rows:
+        return ""
+
+    agent_rows = []
+    for a in rows:
+        name = html.escape(a["name"])
+        linked = _agents.chain_linkage_ok(conn, a["name"])
+        if linked is True:
+            badge = ('<span class="text-xs px-2 py-0.5 rounded-full '
+                     'bg-emerald-100 text-emerald-700">chain linked</span>')
+        elif linked is False:
+            badge = ('<span class="text-xs px-2 py-0.5 rounded-full '
+                     'bg-red-100 text-red-700 font-semibold">chain BROKEN</span>')
+        else:
+            badge = ('<span class="text-xs px-2 py-0.5 rounded-full '
+                     'bg-slate-100 text-slate-500">no entries</span>')
+        last = _agents.latest_entry(conn, a["name"]) or {}
+        last_hash = html.escape(str(last.get("hash", ""))[:16]) or "—"
+        updated = _ts(a.get("updated_at"))
+        agent_rows.append(
+            '<div class="flex items-center justify-between gap-2 py-1.5 '
+            'border-b border-slate-100 last:border-0">'
+            f'<div class="flex items-center gap-2">{badge}'
+            f'<span class="text-sm font-medium text-slate-700">{name}</span>'
+            f'<span class="text-xs text-slate-400">tick {a.get("tick", 0)}</span></div>'
+            f'<div class="text-xs text-slate-400">'
+            f'<span class="font-mono">{last_hash}</span> · {updated}</div>'
+            '</div>'
+        )
+
+    # Integrity failures (same predicate as the Prometheus counter).
+    total_fail = conn.execute(
+        "SELECT COUNT(*) FROM step WHERE status = 'failed' "
+        "AND error_json LIKE '%hash-chain integrity FAILED%'"
+    ).fetchone()[0]
+    by_day = dict(conn.execute(
+        "SELECT substr(finished_at, 1, 10) AS day, COUNT(*) FROM step "
+        "WHERE status = 'failed' "
+        "AND error_json LIKE '%hash-chain integrity FAILED%' "
+        "AND finished_at >= datetime('now', '-14 days') GROUP BY day"
+    ).fetchall())
+    import datetime as _dt
+    today = _dt.date.today()
+    days = [(today - _dt.timedelta(days=i)).isoformat() for i in range(13, -1, -1)]
+    peak = max([by_day.get(d, 0) for d in days] + [1])
+    bars = "".join(
+        f'<div title="{d}: {by_day.get(d, 0)}" '
+        f'class="w-1.5 rounded-sm {"bg-red-400" if by_day.get(d, 0) else "bg-slate-200"}" '
+        f'style="height:{max(3, int(14 * by_day.get(d, 0) / peak))}px"></div>'
+        for d in days
+    )
+    fail_cls = "text-red-600 font-semibold" if total_fail else "text-slate-400"
+
+    return (
+        '<div class="mt-3 bg-white border border-slate-200 rounded-lg p-3" '
+        'id="forensics-card">'
+        '<div class="flex items-center justify-between gap-2 mb-1">'
+        '<span class="text-sm font-medium text-slate-700">Forensic agents</span>'
+        f'<div class="flex items-end gap-0.5 h-4" title="integrity failures, last 14 days">{bars}</div>'
+        '</div>'
+        + "".join(agent_rows)
+        + f'<p class="text-xs {fail_cls} mt-2">{total_fail} integrity '
+          'failure(s) recorded in step history.</p>'
+        '</div>'
+    )
+
+
 def render_run_list(conn, *, status=None, workflow=None, after=None, before=None,
                     mesh_info: Optional[dict] = None):
     filtering = any(x is not None for x in (status, workflow, after, before))
@@ -266,6 +348,7 @@ def render_run_list(conn, *, status=None, workflow=None, after=None, before=None
         return _page("automaton - runs",
                      '<h1 class="text-xl font-semibold mb-4">Runs</h1>' + filter_bar +
                      '<p class="text-slate-500">No matching runs.</p>' +
+                     render_forensics_card(conn) +
                      render_mesh_card(mesh_info or {}),
                      auto_refresh=0 if filtering else 5)
 
@@ -311,6 +394,7 @@ def render_run_list(conn, *, status=None, workflow=None, after=None, before=None
         + '<th class="text-left py-2 px-3">Finished</th></tr></thead>'
         + f'<tbody>{"".join(table_rows)}</tbody></table></div>'
         + '<p class="text-xs text-slate-400 mt-4">' + (f'{len(runs)} run(s) found.' if filtering else 'Auto-refreshes every 5 seconds.') + '</p>'
+        + render_forensics_card(conn)
         + render_mesh_card(mesh_info or {})
     )
     return _page("automaton - runs", body, auto_refresh=0 if filtering else 5)
@@ -363,6 +447,35 @@ def _render_step_output(out, err):
             lbl_cls = "bg-green-100 text-green-800" if flag else "bg-slate-100 text-slate-600"
             blocks.append(f'<span class="inline-block mt-2 text-xs px-2 py-0.5 rounded {lbl_cls}">'
                           + ("written" if flag else "no-op") + '</span>')
+        elif "merkle_root" in out:
+            # echoes_agent output (run/verify/report) — ADR-002 Phase 10b.
+            integ = out.get("integrity")
+            if integ is not None:
+                ok = str(integ).lower() == "ok"
+                icls = "bg-green-100 text-green-800" if ok else "bg-red-100 text-red-800"
+                blocks.append(
+                    f'<span class="inline-block mt-2 text-xs px-2 py-0.5 rounded {icls}">'
+                    f'integrity {html.escape(str(integ))}</span>')
+            root = out.get("merkle_root") or ""
+            if root:
+                short = html.escape(str(root)[:16])
+                full = html.escape(str(root), quote=True)
+                blocks.append(
+                    '<span class="inline-block mt-2 ml-1 text-xs font-mono px-2 py-0.5 '
+                    f'rounded bg-slate-100 text-slate-700" title="{full}">root {short}…</span>'
+                    f'<button onclick="navigator.clipboard.writeText(\'{full}\')" '
+                    'class="ml-1 text-xs text-slate-500 hover:text-blue-600" '
+                    'title="Copy Merkle root">⎘</button>')
+            n = out.get("entries", out.get("total_memories"))
+            if n is not None:
+                blocks.append(
+                    '<span class="inline-block mt-2 ml-1 text-xs px-2 py-0.5 rounded '
+                    f'bg-slate-100 text-slate-600">{html.escape(str(n))} entries</span>')
+            if out.get("sealed_entries") is not None:
+                blocks.append(
+                    '<span class="inline-block mt-2 ml-1 text-xs px-2 py-0.5 rounded '
+                    f'bg-amber-100 text-amber-700">{html.escape(str(out["sealed_entries"]))} sealed</span>')
+            blocks.append(_pre("stdout", out.get("stdout", "")))
         else:
             blocks.append(_pre("output", _json_rso.dumps(out, indent=2)))
     elif out is not None:

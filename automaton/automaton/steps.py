@@ -534,6 +534,15 @@ def _echoes_agent(spec, idempotency_key):
     timeout = float(spec.get("timeout", 120))
     binary  = spec.get("binary") or _find_echoes_binary()
 
+    # Sensor / config passthrough (run action only — ADR-002 Phase 9b).
+    # Values may arrive as strings via env templating, so booleans are
+    # parsed tolerantly ("true"/"1"/"yes" → True).
+    config  = spec.get("config")
+    watch   = spec.get("watch")
+    procs   = _truthy(spec.get("procs"))
+    net     = _truthy(spec.get("net"))
+    auth    = spec.get("auth")
+
     if action not in ("run", "verify", "report"):
         raise StepError(
             f"echoes_agent: invalid action {action!r}; "
@@ -551,6 +560,23 @@ def _echoes_agent(spec, idempotency_key):
     if action == "run":
         cmd = [binary, "run", "--db", db, "--ticks", str(ticks),
                "--name", name, "--goal", goal]
+        # Note: explicit flags override --config values inside echoes, and
+        # this step always passes --db/--ticks/--name/--goal explicitly —
+        # so set those in the step spec, not (only) in the config file.
+        if config:
+            cmd += ["--config", str(config)]
+        if watch:
+            cmd += ["--watch", str(watch)]
+        if procs:
+            cmd += ["--procs"]
+        if net:
+            cmd += ["--net"]
+        if _truthy(auth):
+            cmd += ["--auth"]
+        elif isinstance(auth, str) and auth.strip().lower() in ("", "false", "0", "no", "off"):
+            pass  # explicitly disabled via env templating
+        elif auth:
+            cmd += ["--auth", str(auth)]
     elif action == "verify":
         cmd = [binary, "verify", "--db", db, "--name", name]
     else:
@@ -592,6 +618,15 @@ def _echoes_agent(spec, idempotency_key):
 
 
 # --- echoes helpers (private) ---
+
+def _truthy(v) -> bool:
+    """Tolerant boolean for values that may arrive as env-templated strings."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "yes", "on")
+    return bool(v) if isinstance(v, (int, float)) else False
+
 
 def _find_echoes_binary():
     """Return the echoes binary path: PATH first, then monorepo build dirs."""

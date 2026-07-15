@@ -126,6 +126,37 @@ def list_agents(conn) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def latest_entry(conn, agent_name: str) -> dict[str, Any] | None:
+    """Return the highest-tick memory entry for *agent_name*, or None."""
+    row = conn.execute(
+        "SELECT entry_json FROM agent_memory "
+        "WHERE agent_name = ? ORDER BY tick DESC LIMIT 1",
+        (agent_name,),
+    ).fetchone()
+    return json.loads(row["entry_json"]) if row else None
+
+
+def chain_linkage_ok(conn, agent_name: str) -> bool | None:
+    """Cheap server-side chain check: every entry's ``prev_hash`` must equal
+    the previous entry's ``hash``, starting from the zero genesis.
+
+    This detects reordering, deletion, and splicing of stored entries. It
+    does NOT recompute the SHA-256 content hashes (that's echoes' /
+    echoes-wasm's job — automaton does not replicate the hashing scheme), so
+    a forged entry with self-consistent hashes passes here but fails
+    ``echoes verify``. Returns None when the agent has no entries.
+    """
+    entries = get_entries(conn, agent_name)
+    if not entries:
+        return None
+    prev = "0" * 64
+    for e in entries:
+        if e.get("prev_hash") != prev:
+            return False
+        prev = e.get("hash", "")
+    return True
+
+
 def delete_agent(conn, name: str) -> bool:
     """Delete an agent and all its memory entries (CASCADE).
 

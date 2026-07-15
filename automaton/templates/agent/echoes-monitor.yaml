@@ -1,0 +1,62 @@
+# Continuous monitoring via chained micro-runs (ADR-002 Phase 9b).
+# Description: Every 5 minutes, advances a persistent echoes agent with real
+#   sensors (file watch + process + network scan), then verifies the hash
+#   chain and stores the attested Merkle root. Offline windows between runs
+#   are covered by the Phase 9a state-diff: files changed while no run was
+#   active appear as *-while-offline events. Fails the run (urgent alert,
+#   bypasses quiet hours) if the chain no longer verifies.
+# Required secrets: none
+# Required env: ECHOES_DB     (path to the persistent monitor DB,
+#                              default: echoes-monitor.db)
+#               ECHOES_AGENT  (agent name, default: Monitor)
+#               ECHOES_WATCH  (directory to watch/diff, default: unset)
+#               ECHOES_TICKS  (ticks per micro-run, default: 20 — size it
+#                              generously: offline-diff events drain one per
+#                              tick ahead of live sensors)
+#               ECHOES_NET    (scan connection table, default: "true")
+#               ECHOES_PROCS  (scan processes, default: "true")
+#               ECHOES_BINARY (path to echoes binary, optional)
+# Cron: "*/5 * * * *"
+# Last verified: 2026-07-15
+
+name: echoes-monitor
+
+urgent: true
+
+triggers:
+  - cron: "*/5 * * * *"
+
+steps:
+  # Advance the agent one micro-run. The chain is logically continuous
+  # across runs; the Phase 9a manifest diff covers the gaps.
+  - name: monitor
+    type: echoes_agent
+    action: run
+    db: "${{ env.ECHOES_DB | default('echoes-monitor.db') }}"
+    agent_name: "${{ env.ECHOES_AGENT | default('Monitor') }}"
+    ticks: "${{ env.ECHOES_TICKS | default(20) }}"
+    goal: "continuous forensic monitoring"
+    watch: "${{ env.ECHOES_WATCH | default('') }}"
+    net: "${{ env.ECHOES_NET | default('true') }}"
+    procs: "${{ env.ECHOES_PROCS | default('true') }}"
+    binary: "${{ env.ECHOES_BINARY | default('') }}"
+
+  # Assert the chain (and any pruning checkpoints) still verify. A failure
+  # here fails the workflow → urgent notification.
+  - name: verify_integrity
+    type: echoes_agent
+    needs: [monitor]
+    action: verify
+    db: "${{ env.ECHOES_DB | default('echoes-monitor.db') }}"
+    agent_name: "${{ env.ECHOES_AGENT | default('Monitor') }}"
+    binary: "${{ env.ECHOES_BINARY | default('') }}"
+
+  # Leave the attested Merkle root in automaton's run history — successive
+  # runs form an inspectable trail of roots.
+  - name: attest_root
+    type: echoes_agent
+    needs: [verify_integrity]
+    action: report
+    db: "${{ env.ECHOES_DB | default('echoes-monitor.db') }}"
+    agent_name: "${{ env.ECHOES_AGENT | default('Monitor') }}"
+    binary: "${{ env.ECHOES_BINARY | default('') }}"

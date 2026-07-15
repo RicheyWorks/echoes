@@ -99,6 +99,8 @@ def test_models_include_trigger_result():
     "fun runs(",
     "fun runDetail(",
     "fun workflows(",
+    "fun agents(",
+    "fun agentEntries(",
     "fun trigger(",
     "fun signal(",
     "fun cancel(",
@@ -156,6 +158,7 @@ def test_settings_exposes_make_client():
     ("RunsListScreen.kt",   "RunsListScreen"),
     ("RunDetailScreen.kt",  "RunDetailScreen"),
     ("WorkflowsScreen.kt",  "WorkflowsScreen"),
+    ("AgentsScreen.kt",     "AgentsScreen"),
     ("SettingsScreen.kt",   "SettingsScreen"),
 ])
 def test_screen_declares_composable(screen_file, composable_name):

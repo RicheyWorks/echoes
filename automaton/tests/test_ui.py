@@ -60,6 +60,81 @@ def _post(host: str, path: str, body: str = "", headers=None):
     return r.status, out.decode("utf-8", errors="replace")
 
 
+# --------- Forensics card (ADR-002 Phase 10c) ---------
+
+def _seed_agent(db_path, name, entries):
+    from automaton import agents as _agents
+    conn = _db.connect(db_path)
+    _agents.upsert_agent(conn, name, "test goal", 0)
+    for e in entries:
+        _agents.append_entry(conn, name, e["tick"], e)
+    conn.close()
+
+
+def _linked_entries(n):
+    out, prev = [], "0" * 64
+    for t in range(1, n + 1):
+        h = f"{t:064x}"
+        out.append({"tick": t, "action": "Observe", "event": "e", "note": "n",
+                    "hash": h, "prev_hash": prev})
+        prev = h
+    return out
+
+
+def test_forensics_card_absent_without_agents(server):
+    host, _ = server
+    _, _, body = _get(host, "/")
+    assert "forensics-card" not in body
+
+
+def test_forensics_card_shows_linked_agent(server):
+    host, db_path = server
+    _seed_agent(db_path, "Echo", _linked_entries(3))
+    _, _, body = _get(host, "/")
+    assert "forensics-card" in body
+    assert "Echo" in body
+    assert "chain linked" in body
+    assert "chain BROKEN" not in body
+    assert "0 integrity" in body
+
+
+def test_forensics_card_flags_broken_linkage(server):
+    host, db_path = server
+    bad = _linked_entries(3)
+    bad[1]["prev_hash"] = "f" * 64  # splice
+    _seed_agent(db_path, "Tampered", bad)
+    _, _, body = _get(host, "/")
+    assert "chain BROKEN" in body
+
+
+def test_forensics_card_empty_agent_shows_no_entries_badge(server):
+    host, db_path = server
+    _seed_agent(db_path, "Fresh", [])
+    _, _, body = _get(host, "/")
+    assert "no entries" in body
+
+
+# --------- echoes step output rendering (ADR-002 Phase 10b) ---------
+
+def test_step_output_renders_echoes_badges():
+    out = {"agent": "Echo", "integrity": "ok", "merkle_root": "ab" * 32,
+           "entries": 12, "sealed_entries": 6}
+    htm = _ui._render_step_output(out, None)
+    assert "integrity ok" in htm
+    assert "bg-green-100" in htm
+    assert ("ab" * 32)[:16] in htm          # truncated root shown
+    assert "ab" * 32 in htm                  # full root in title/copy
+    assert "12 entries" in htm
+    assert "6 sealed" in htm
+
+
+def test_step_output_echoes_failed_integrity_is_red():
+    out = {"agent": "Echo", "integrity": "failed", "merkle_root": "cd" * 32}
+    htm = _ui._render_step_output(out, None)
+    assert "integrity failed" in htm
+    assert "bg-red-100" in htm
+
+
 # --------- HTML shell ---------
 
 def test_runs_page_uses_tailwind_cdn(server):
